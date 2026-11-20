@@ -1,0 +1,17 @@
+node_modules/
+.env
+.env.*
+*.log
+
+# Runtime data: uploads, projects, exports, models and temp files are generated locally.
+data/
+
+# Large sample clips downloaded for visual inspection (not part of the app).
+inspection/
+
+# Desktop/tooling folders.
+.cloud-attachments/
+.freebuff/
+
+.DS_Store
+Thumbs.db

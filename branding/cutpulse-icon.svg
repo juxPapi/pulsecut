@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="CutPulse app icon">
+  <rect width="512" height="512" rx="116" fill="#C8FF3D"/>
+  <path d="M170 132 L398 256 L170 380 Z" fill="#0B0D11"/>
+  <path d="M140 256 H208 L226 288 L250 195 L274 288 L292 256 H400" fill="none" stroke="#C8FF3D" stroke-width="22" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

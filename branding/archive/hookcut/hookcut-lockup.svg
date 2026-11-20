@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 400" width="1080" height="400" role="img" aria-label="HookCut horizontal lockup">
+  <rect width="1080" height="400" fill="#080A0E"/>
+
+  <g transform="translate(96 88) scale(0.4375)">
+    <rect width="512" height="512" rx="116" fill="#C8FF3D"/>
+    <path d="M170 132 L398 256 L170 380 Z" fill="#0B0D11"/>
+    <path d="M182 398 L392 120" fill="none" stroke="#C8FF3D" stroke-width="28" stroke-linecap="round"/>
+  </g>
+
+  <text x="344" y="232" font-family="'Segoe UI', 'Arial Black', system-ui, sans-serif" font-weight="900" font-size="118" letter-spacing="-3">
+    <tspan fill="#F2F5FA">HOOK</tspan><tspan fill="#C8FF3D">CUT</tspan>
+  </text>
+  <text x="348" y="292" font-family="Consolas, monospace" font-weight="700" font-size="17" letter-spacing="6" fill="#8790A1">LONG VIDEOS IN. SHORT CLIPS OUT.</text>
+</svg>
