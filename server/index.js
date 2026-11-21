@@ -22,7 +22,7 @@ import {
 import { resolveStyle, resolveLayout, ASPECTS, toCues, LANGUAGES, CAPTION_STYLES } from '../shared/captions.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const PORT = Number(process.env.PORT) > 0 ? Number(process.env.PORT) : 8787;
+const PORT = Number(process.env.PORT) > 0 ? Number(process.env.PORT) : 8790;
 
 const app = express();
 app.use(express.json({ limit: '4mb' }));

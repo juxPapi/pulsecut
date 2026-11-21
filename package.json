@@ -5,7 +5,7 @@
   "type": "module",
   "description": "PulseCut — turn long videos into short clips, entirely on your own machine.",
   "scripts": {
-    "dev": "concurrently -k -n api,web -c cyan,magenta \"node server/index.js\" \"vite --port 5173 --strictPort\"",
+    "dev": "concurrently -k -n api,web -c cyan,magenta \"node server/index.js\" \"vite --port 5190 --strictPort\"",
     "api": "node server/index.js",
     "build": "vite build",
     "start": "node server/index.js --serve-build"

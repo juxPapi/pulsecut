@@ -4,7 +4,7 @@ import react from '@vitejs/plugin-react';
 export default defineConfig({
   plugins: [react()],
   server: {
-    port: 5173,
+    port: 5190,
     strictPort: true,
     // Render jobs write transient files (font, captions, videos) into data/.
     // Downloaded clips live in inspection/. Watching either directory makes
@@ -13,8 +13,8 @@ export default defineConfig({
       ignored: [/node_modules/, /\.git/, /[\\/]data[\\/]/, /[\\/]inspection[\\/]/],
     },
     proxy: {
-      '/api': 'http://127.0.0.1:8787',
-      '/media': 'http://127.0.0.1:8787',
+      '/api': 'http://127.0.0.1:8790',
+      '/media': 'http://127.0.0.1:8790',
     },
   },
   build: { outDir: 'dist', emptyOutDir: true },

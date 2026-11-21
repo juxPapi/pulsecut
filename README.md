@@ -53,20 +53,22 @@ npm install
 npm run dev
 ```
 
-Open **http://localhost:5173**. `npm run dev` starts both processes:
+Open **http://localhost:5190**. `npm run dev` starts both processes:
 
-- Vite dev server on `http://localhost:5173` (proxies `/api` and `/media` to port 8787)
-- Express API on `http://127.0.0.1:8787`
+- Vite dev server on `http://localhost:5190` (proxies `/api` and `/media` to port 8790)
+- Express API on `http://127.0.0.1:8790`
+
+PulseCut uses ports 5190/8790 so it never collides with other local apps that use 5173/8787.
 
 ## Production build
 
 ```bash
 npm install
 npm run build     # compiles the React app into dist/
-npm start         # Express serves dist/ and the API on PORT (default 8787)
+npm start         # Express serves dist/ and the API on PORT (default 8790)
 ```
 
-Then open **http://localhost:8787**. The compiled `dist/` bundle is committed in this repository, so `npm start` works immediately after install.
+Then open **http://localhost:8790**. The compiled `dist/` bundle is committed in this repository, so `npm start` works immediately after install.
 
 ## How to use it
 
@@ -82,7 +84,7 @@ If Whisper struggles with a language or accent, you can paste a transcript manua
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `PORT` | `8787` | Express API / production server port |
+| `PORT` | `8790` | Express API / production server port |
 | `FFMPEG_PATH` | auto-detected | Override the FFmpeg executable |
 | `FFPROBE_PATH` | npm-bundled ffprobe | Override the ffprobe executable |
 
@@ -115,7 +117,7 @@ If Whisper struggles with a language or accent, you can paste a transcript manua
 
 ## API overview
 
-The Express API listens on `127.0.0.1:8787`. Main endpoints:
+The Express API listens on `127.0.0.1:8790`. Main endpoints:
 
 - `GET /api/health` — FFmpeg/ffprobe availability, cached model count, languages, styles and aspects
 - `GET /api/projects`, `GET /api/projects/:id`, `DELETE /api/projects/:id` — project management
