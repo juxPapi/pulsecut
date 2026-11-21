@@ -24,6 +24,7 @@ export const FONT_CHOICES = [
 ];
 
 export const ASPECTS = {
+  '16:9': { id: '16:9', label: '16:9 Widescreen', short: 'YouTube · desktop · feed', width: 1920, height: 1080 },
   '9:16': { id: '9:16', label: '9:16 Vertical', short: 'TikTok · Reels · Shorts', width: 1080, height: 1920 },
   '4:5': { id: '4:5', label: '4:5 Portrait', short: 'Instagram feed · LinkedIn', width: 1080, height: 1350 },
   '1:1': { id: '1:1', label: '1:1 Square', short: 'Feed · X', width: 1080, height: 1080 },

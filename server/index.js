@@ -445,6 +445,10 @@ async function runRenderJob(job) {
   job.status = 'rendering';
   job.progress = 1;
   job.message = `Rendering ${aspect.id}`;
+  job.srcWidth = project.width;
+  job.srcHeight = project.height;
+  job.width = aspect.width;
+  job.height = aspect.height;
   broadcast('job', job);
 
   try {
@@ -466,8 +470,10 @@ async function runRenderJob(job) {
       layout: resolveLayout(job.layout),
       hasAudio: project.hasAudio !== false,
       appendOutro: true,
-      onProgress: (percent) => {
-        job.progress = Math.round(percent);
+      onProgress: (percent, stats = {}) => {
+        if (percent !== null && percent !== undefined) job.progress = Math.round(percent);
+        if (stats.speed !== null && stats.speed !== undefined) job.speed = stats.speed;
+        if (stats.fps !== null && stats.fps !== undefined) job.fps = stats.fps;
         broadcast('job', job);
       },
     });

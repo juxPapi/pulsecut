@@ -6,6 +6,22 @@ import { OUTRO_DURATION, OUTRO_BACKGROUND, OUTRO_LIME, OUTRO_INK, OUTRO_TEXT, CH
 
 let blurBuffer = null;
 
+const CORNERS = ['nw', 'ne', 'sw', 'se'];
+const MIN_CROP = 1 / ZOOM_MAX;
+
+const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+
+/** The draggable crop rectangle, in fractions of the preview, for a frame value. */
+function cropRectFor(frame) {
+  const { focus, focusY, zoom } = resolveFrame(frame);
+  const size = 1 / zoom;
+  return {
+    size,
+    left: clamp(focus - size / 2, 0, 1 - size),
+    top: clamp(focusY - size / 2, 0, 1 - size),
+  };
+}
+
 /**
  * Draw the blurred backdrop the same way FFmpeg builds it: crop, scale to the
  * frame, then blur with the edge pixels extended outwards. The extension lives
@@ -114,6 +130,7 @@ export default function PhonePreview({
 }) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
+  const frameSurfaceRef = useRef(null);
   const playheadRef = useRef(playhead);
   playheadRef.current = playhead;
   const [playing, setPlaying] = useState(false);
@@ -123,7 +140,7 @@ export default function PhonePreview({
   const [previewing, setPreviewing] = useState(false);
   const [previewError, setPreviewError] = useState(null);
 
-  const aspectInfo = ASPECTS[aspect] || ASPECTS['9:16'];
+  const aspectInfo = ASPECTS[aspect] || ASPECTS['16:9'];
   const frameValue = resolveFrame(frame);
   const playback = project?.playback || null;
   const videoSrc = `/api/media/${project.id}${playback?.status === 'ready' ? `?v=${playback.version}` : ''}`;
@@ -135,6 +152,10 @@ export default function PhonePreview({
   const drawnRef = useRef({});
   const contentEndRef = useRef(0);
   const lastEmittedRef = useRef(null);
+  const dragRef = useRef(null);
+  const frameRafRef = useRef(0);
+  const pendingFrameRef = useRef(null);
+  const wheelCommitRef = useRef(0);
 
   // Remember the value we reported to the parent so a re-render with that same
   // playhead cannot turn into a second seek back into the video.
@@ -150,17 +171,150 @@ export default function PhonePreview({
     video.currentTime = target > 0 ? target : 0.001;
   };
 
-  const updateFrame = (patch) => setFrame((previous) => resolveFrame({ ...previous, ...patch }));
-  const commitFrame = (next = frameValue) => {
-    if (clip) onFrame?.(next);
+  // Coalesce drag/keyboard/wheel changes to one React render per animation frame.
+  // The canvas blur is expensive, so painting every pointermove would stutter.
+  const updateFrame = (patch) => {
+    pendingFrameRef.current = { ...(pendingFrameRef.current || frameRef.current), ...patch };
+    if (frameRafRef.current) return;
+    frameRafRef.current = requestAnimationFrame(() => {
+      frameRafRef.current = 0;
+      const next = resolveFrame(pendingFrameRef.current);
+      pendingFrameRef.current = null;
+      frameRef.current = next;
+      setFrame(next);
+    });
   };
+
+  // One PATCH per gesture: pointerup, keyup or the end of a wheel burst.
+  const commitFrame = (fallback) => {
+    const value = resolveFrame(pendingFrameRef.current || fallback || frameRef.current);
+    if (frameRafRef.current) cancelAnimationFrame(frameRafRef.current);
+    frameRafRef.current = 0;
+    pendingFrameRef.current = null;
+    frameRef.current = value;
+    setFrame(value);
+    if (clip) onFrame?.(value);
+  };
+
   const resetFrame = () => {
     const next = resolveFrame({});
+    if (frameRafRef.current) cancelAnimationFrame(frameRafRef.current);
+    frameRafRef.current = 0;
+    pendingFrameRef.current = null;
+    frameRef.current = next;
     setFrame(next);
     commitFrame(next);
   };
 
-  /** Paint the live video into the phone frame with the same composition the renderer uses. */
+  useEffect(
+    () => () => {
+      if (frameRafRef.current) cancelAnimationFrame(frameRafRef.current);
+      if (wheelCommitRef.current) clearTimeout(wheelCommitRef.current);
+    },
+    []
+  );
+
+  const pointerPosition = (event) => {
+    const rect = frameSurfaceRef.current?.getBoundingClientRect();
+    if (!rect || !rect.width || !rect.height) return { x: 0, y: 0 };
+    return {
+      x: clamp((event.clientX - rect.left) / rect.width, 0, 1),
+      y: clamp((event.clientY - rect.top) / rect.height, 0, 1),
+    };
+  };
+
+  const beginFrameDrag = (mode, corner = null) => (event) => {
+    if (!clip || previewUrl || event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      /* older browsers can still drag without capture */
+    }
+    dragRef.current = {
+      mode,
+      corner,
+      pointerId: event.pointerId,
+      start: pointerPosition(event),
+      frame: resolveFrame(frameRef.current),
+      box: cropRectFor(frameRef.current),
+    };
+  };
+
+  const moveFrameDrag = (event) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    const point = pointerPosition(event);
+
+    if (drag.mode === 'pan') {
+      updateFrame({
+        focus: clamp(drag.frame.focus + point.x - drag.start.x, 0, 1),
+        focusY: clamp(drag.frame.focusY + point.y - drag.start.y, 0, 1),
+      });
+      return;
+    }
+
+    const signX = drag.corner.includes('w') ? -1 : 1;
+    const signY = drag.corner.includes('n') ? -1 : 1;
+    const opposite = {
+      x: signX > 0 ? drag.box.left : drag.box.left + drag.box.size,
+      y: signY > 0 ? drag.box.top : drag.box.top + drag.box.size,
+    };
+    const dx = (point.x - drag.start.x) * signX;
+    const dy = (point.y - drag.start.y) * signY;
+    const size = clamp(drag.box.size + (dx + dy) / 2, MIN_CROP, 1);
+    const left = clamp(signX > 0 ? opposite.x : opposite.x - size, 0, 1 - size);
+    const top = clamp(signY > 0 ? opposite.y : opposite.y - size, 0, 1 - size);
+    updateFrame({
+      zoom: 1 / size,
+      focus: left + size / 2,
+      focusY: top + size / 2,
+    });
+  };
+
+  const endFrameDrag = (event) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    dragRef.current = null;
+    try {
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+    } catch {
+      /* capture is optional */
+    }
+    commitFrame();
+  };
+
+  const handleFrameKeyDown = (event) => {
+    const deltas = {
+      ArrowLeft: [-0.02, 0],
+      ArrowRight: [0.02, 0],
+      ArrowUp: [0, -0.02],
+      ArrowDown: [0, 0.02],
+    };
+    const delta = deltas[event.key];
+    if (!delta || !clip || previewUrl) return;
+    event.preventDefault();
+    const step = event.shiftKey ? 2.5 : 1;
+    updateFrame({
+      focus: clamp(frameRef.current.focus + delta[0] * step, 0, 1),
+      focusY: clamp(frameRef.current.focusY + delta[1] * step, 0, 1),
+    });
+    commitFrame();
+  };
+
+  const handleFrameWheel = (event) => {
+    if (!clip || previewUrl || !event.deltaY) return;
+    const next = clamp(frameRef.current.zoom - event.deltaY * 0.0015, ZOOM_MIN, ZOOM_MAX);
+    updateFrame({ zoom: Math.round(next * 1000) / 1000 });
+    if (wheelCommitRef.current) clearTimeout(wheelCommitRef.current);
+    wheelCommitRef.current = setTimeout(() => commitFrame(), 140);
+  };
+
+  /** Paint the live video into the 16:9 window with the same composition the renderer uses. */
   const draw = useCallback(() => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
@@ -423,18 +577,27 @@ export default function PhonePreview({
     }
   };
 
+  const cropRect = cropRectFor(frameValue);
+  const cropStyle = {
+    left: `${cropRect.left * 100}%`,
+    top: `${cropRect.top * 100}%`,
+    width: `${cropRect.size * 100}%`,
+    height: `${cropRect.size * 100}%`,
+  };
+
   return (
     <section className="preview">
       <div className="preview-head">
         <div className="preview-controls">
-          <div className="aspect-switch">
+          <div className="aspect-switch" role="group" aria-label="Preview format">
             {Object.values(ASPECTS).map((item) => (
               <button
                 key={item.id}
                 type="button"
                 className={aspect === item.id ? 'active' : ''}
                 onClick={() => onAspect(item.id)}
-                title={item.short}
+                title={`${item.label} · ${item.width}×${item.height}`}
+                aria-pressed={aspect === item.id}
               >
                 {item.id}
               </button>
@@ -467,13 +630,12 @@ export default function PhonePreview({
         </div>
       </div>
 
-      <div className="phone-stage">
-        <div className="phone" style={{ '--phone-ratio': aspectInfo.width / aspectInfo.height }}>
-          <div className="phone-notch" />
-          <div className="phone-screen" style={{ aspectRatio: `${aspectInfo.width} / ${aspectInfo.height}` }}>
+      <div className="frame-stage">
+        <div className="edit-frame" style={{ '--frame-ratio': aspectInfo.width / aspectInfo.height }}>
+          <div className="frame-screen" style={{ aspectRatio: `${aspectInfo.width} / ${aspectInfo.height}` }}>
             <video
               ref={videoRef}
-              className="phone-video"
+              className="frame-video"
               src={previewUrl || videoSrc}
               playsInline
               preload="auto"
@@ -485,7 +647,7 @@ export default function PhonePreview({
               onPause={() => setPlaying(false)}
               style={{ visibility: previewUrl ? 'visible' : 'hidden' }}
             />
-            {!previewUrl && <canvas ref={canvasRef} className="phone-canvas" />}
+            {!previewUrl && <canvas ref={canvasRef} className="frame-canvas" />}
             {!previewUrl && (
               <div className="caption-layer" style={{ justifyContent: captionPosition }}>
                 {cue ? (
@@ -510,10 +672,43 @@ export default function PhonePreview({
                 )}
               </div>
             )}
-            <div className="phone-grain" />
+            <div className="frame-grain" />
+
+            {!previewUrl && clip && (
+              <div className="frame-surface" ref={frameSurfaceRef} onWheel={handleFrameWheel}>
+                <div
+                  className="frame-crop"
+                  style={cropStyle}
+                  role="group"
+                  tabIndex={0}
+                  aria-label="Framing controls. Drag to move the crop, use the corners to zoom."
+                  onPointerDown={beginFrameDrag('pan')}
+                  onPointerMove={moveFrameDrag}
+                  onPointerUp={endFrameDrag}
+                  onPointerCancel={endFrameDrag}
+                  onKeyDown={handleFrameKeyDown}
+                >
+                  <span className="frame-grid" aria-hidden="true" />
+                  <span className="frame-center" aria-hidden="true" />
+                  {CORNERS.map((corner) => (
+                    <button
+                      key={corner}
+                      type="button"
+                      className={`frame-handle handle-${corner}`}
+                      aria-label={`Drag ${corner} corner to zoom and reframe`}
+                      onPointerDown={beginFrameDrag('corner', corner)}
+                      onPointerMove={moveFrameDrag}
+                      onPointerUp={endFrameDrag}
+                      onPointerCancel={endFrameDrag}
+                      onKeyDown={handleFrameKeyDown}
+                    />
+                  ))}
+                </div>
+                <span className="frame-hint">Drag to reframe · corners to zoom</span>
+              </div>
+            )}
           </div>
         </div>
-        <div className="phone-shadow" />
       </div>
 
       {previewError && <p className="preview-error">{previewError}</p>}
@@ -576,8 +771,8 @@ export default function PhonePreview({
             step="0.01"
             value={frameValue.focus}
             onChange={(event) => updateFrame({ focus: Number(event.target.value) })}
-            onPointerUp={commitFrame}
-            onKeyUp={commitFrame}
+            onPointerUp={() => commitFrame()}
+            onKeyUp={() => commitFrame()}
             disabled={!clip}
           />
         </label>
@@ -592,8 +787,8 @@ export default function PhonePreview({
             step="0.01"
             value={frameValue.focusY}
             onChange={(event) => updateFrame({ focusY: Number(event.target.value) })}
-            onPointerUp={commitFrame}
-            onKeyUp={commitFrame}
+            onPointerUp={() => commitFrame()}
+            onKeyUp={() => commitFrame()}
             disabled={!clip}
           />
         </label>
@@ -608,8 +803,8 @@ export default function PhonePreview({
             step="0.01"
             value={frameValue.zoom}
             onChange={(event) => updateFrame({ zoom: Number(event.target.value) })}
-            onPointerUp={commitFrame}
-            onKeyUp={commitFrame}
+            onPointerUp={() => commitFrame()}
+            onKeyUp={() => commitFrame()}
             disabled={!clip}
           />
         </label>
@@ -617,6 +812,7 @@ export default function PhonePreview({
           <button className="btn ghost small" type="button" onClick={resetFrame} disabled={!clip}>
             Reset frame
           </button>
+          <span className="muted-label">Drag the on-screen handles or scroll to zoom</span>
           {clip && <span className="muted-label">{clip.score}/100 viral score</span>}
         </div>
       </div>

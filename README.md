@@ -17,11 +17,13 @@ PulseCut is a local-first studio that turns a long video into vertical, captione
 - **100% local pipeline** — audio extraction with FFmpeg, speech recognition with Whisper through `@huggingface/transformers` (ONNX runtime). Models are cached in `data/models/` after the first download, so later runs work offline.
 - **Automatic moment detection** — scores up to 8 candidate clips from the transcript using hooks, pacing, completeness and word density, with human-readable reasons for each score.
 - **Editable clips** — trim start/end times, rewrite titles and hashtags, and nudge the subject position/zoom for every clip.
-- **Live phone preview** — scrub a clip in a 9:16, 4:5 or 1:1 frame before rendering. Four video layouts: Fill, Blur, Split and Triple.
+- **Live 16:9 editing window** — scrub a clip in a widescreen frame by default, and switch the preview to 9:16, 4:5 or 1:1 from the ratio tabs. Four video layouts: Fill, Blur, Split and Triple.
+- **Custom framing handles** — drag the crop box or its four corner handles directly on the preview to reframe and zoom; the sliders and the FFmpeg renderer stay in sync with the same values.
 - **87 caption styles** across 6 families (Bold Pop, Minimal Clean, Neon Nights, Boxed & Blocked, Retro Type, Karaoke Glow), with font, colour, size, position, opacity and tilt controls.
 - **15 languages**, including auto-detect, English, Hindi, Urdu, Hinglish, Spanish, French, German, Portuguese, Arabic, Turkish, Indonesian, Bengali, Tamil and Russian.
 - **Three Whisper model sizes** — Tiny (~75 MB), Base (~145 MB, recommended) and Small (~480 MB).
-- **Batch export** — render one clip or all clips in one pass, in any combination of 9:16 (1080×1920), 4:5 (1080×1350) and 1:1 (1080×1080). Captions are burned in, an outro is appended, and finished files are downloadable from the Export panel.
+- **Batch export** — render one clip or all clips in one pass, in any combination of 16:9 (1920×1080), 9:16 (1080×1920), 4:5 (1080×1350) and 1:1 (1080×1080). Captions are burned in, an outro is appended, and finished files are downloadable from the dedicated Render page.
+- **Live conversion rate** — every render job shows the source→output resolution (e.g. 720p → 1080p) and FFmpeg's live encoding speed in realtime multiplier and frames per second, so you can see exactly how fast each format is converting.
 - **Production build included** — the compiled front end lives in `dist/` and can be served by the Express API with `npm start`.
 
 ## Tech stack
@@ -81,11 +83,13 @@ Then open **http://localhost:8790**. The compiled `dist/` bundle is committed in
 
 ## How to use it
 
+Use the **Import / Editing / Render** tabs at the top, or the matching stage rail on the left, to switch pages.
+
 1. **Import** — drop an MP4/MOV/MKV/WebM file (up to 8 GB), choose the spoken language and Whisper model, then let transcription run. Progress and logs stream live.
-2. **Pick clips** — the left rail lists scored moments. Select one to load it into the phone preview.
-3. **Style** — choose a caption style, adjust size/position/opacity, and switch the video layout.
-4. **Post** — edit the clip title, hashtags, focus point and zoom.
-5. **Export** — select one or more aspect ratios, render a single clip or all clips, and download the MP4s.
+2. **Editing** — the left rail lists scored moments. Select one to load it into the 16:9 editing window.
+3. **Reframe** — drag inside the crop box to move the subject, drag its corner handles (or scroll) to zoom, or use the sliders underneath. The ratio tabs switch the preview format instantly.
+4. **Style & Post** — choose a caption style, adjust size/position/opacity, and edit the clip title and hashtags. The transcript hide/extend control sits at the bottom right of the editing window.
+5. **Render** — select one or more aspect ratios, render a single clip or all clips, and download the MP4s from the render queue.
 
 If Whisper struggles with a language or accent, you can paste a transcript manually; PulseCut will score clip moments from it without running speech recognition.
 

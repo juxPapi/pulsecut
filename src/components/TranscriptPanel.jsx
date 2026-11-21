@@ -56,11 +56,13 @@ export default function TranscriptPanel({ project, clip, playhead, onSeek }) {
       const next = limited[index + 1];
       const gap = next ? next.start - word.end : 10;
       if (!next || /[.!?…]$/.test(word.text) || gap > 0.8 || current.length >= 42) {
-        groups.push({ start: current[0].start, end: current[current.length - 1].end, words: current });
+        // Two groups can share identical start/end stamps (a transcription
+        // artifact), so key off the group's position rather than its timestamps.
+        groups.push({ id: groups.length, start: current[0].start, end: current[current.length - 1].end, words: current });
         current = [];
       }
     });
-    if (current.length) groups.push({ start: current[0].start, end: current[current.length - 1].end, words: current });
+    if (current.length) groups.push({ id: groups.length, start: current[0].start, end: current[current.length - 1].end, words: current });
     return groups;
   }, [words]);
 
@@ -82,7 +84,7 @@ export default function TranscriptPanel({ project, clip, playhead, onSeek }) {
           const isActiveLine = Boolean(activeWord && activeWord.start >= line.start && activeWord.start < line.end);
           return (
             <TranscriptLine
-              key={`${line.start}-${line.end}`}
+              key={line.id}
               line={line}
               inClip={inClip}
               activeWordStart={isActiveLine ? activeWord.start : null}

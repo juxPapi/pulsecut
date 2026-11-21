@@ -389,13 +389,32 @@ export async function renderClip({
     output,
   ];
 
+  // FFmpeg's -progress stream emits key=value lines that can be split across
+  // stdout chunks. Buffer partial lines so out_time, fps and speed are always
+  // read from a complete record.
+  let pending = '';
   await run(FFMPEG, args, {
     cwd: dir,
     onStdout: (chunk) => {
-      const match = /out_time=(\d+):(\d+):([\d.]+)/.exec(chunk);
-      if (match && onProgress) {
-        const seconds = Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]);
-        onProgress(Math.min(99, (seconds / total) * 100));
+      pending += chunk;
+      const lines = pending.split(/\r?\n/);
+      pending = lines.pop() || '';
+      let percent = null;
+      let fps = null;
+      let speed = null;
+      for (const line of lines) {
+        const time = /^out_time=(\d+):(\d+):([\d.]+)/.exec(line);
+        if (time) {
+          const seconds = Number(time[1]) * 3600 + Number(time[2]) * 60 + Number(time[3]);
+          percent = Math.min(99, (seconds / total) * 100);
+        }
+        const frames = /^fps=([\d.]+)/.exec(line);
+        if (frames) fps = Math.round(Number(frames[1]));
+        const rate = /^speed=([\d.]+)x/.exec(line);
+        if (rate) speed = Number(rate[1]);
+      }
+      if (onProgress && (percent !== null || fps !== null || speed !== null)) {
+        onProgress(percent, { fps, speed });
       }
     },
   });

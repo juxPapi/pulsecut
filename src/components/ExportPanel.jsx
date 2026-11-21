@@ -2,10 +2,19 @@ import { formatBytes } from '../api.js';
 import { ASPECTS } from '../../shared/captions.js';
 
 const PLATFORMS = {
+  '16:9': 'YouTube · desktop · feed',
   '9:16': 'TikTok · Reels · Shorts',
   '4:5': 'Instagram feed · LinkedIn',
   '1:1': 'Feed · X',
 };
+
+/** Short resolution label: 1920×1080 -> 1080p, 1280×720 -> 720p. */
+function resolutionLabel(width, height) {
+  if (!width || !height) return '';
+  const short = Math.min(width, height);
+  if (short >= 2000) return '4K';
+  return `${short}p`;
+}
 
 export default function ExportPanel({ project, clip, jobs, aspects, setAspects, onRender }) {
   const toggleAspect = (id) => {
@@ -69,6 +78,21 @@ export default function ExportPanel({ project, clip, jobs, aspects, setAspects, 
             </div>
             <div className="bar slim">
               <span style={{ width: `${job.status === 'done' ? 100 : job.progress}%` }} />
+            </div>
+            <div className="job-rate">
+              <span className="rate-resolution">
+                {job.srcWidth ? `${resolutionLabel(job.srcWidth, job.srcHeight)} → ` : ''}
+                {resolutionLabel(job.width || ASPECTS[job.aspect]?.width, job.height || ASPECTS[job.aspect]?.height)}
+              </span>
+              {job.status === 'rendering' && (
+                <span className="rate-speed">
+                  {job.speed ? `${job.speed.toFixed(1)}× realtime` : 'Measuring speed…'}
+                  {job.fps ? ` · ${job.fps} fps` : ''}
+                </span>
+              )}
+              {job.status === 'done' && job.speed && (
+                <span className="rate-speed done">{job.speed.toFixed(1)}× realtime peak</span>
+              )}
             </div>
             {job.status === 'done' && job.url && (
               <div className="job-foot">

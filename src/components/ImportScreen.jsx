@@ -107,7 +107,7 @@ export default function ImportScreen({
           <ul className="feature-strip">
             <li>{CAPTION_STYLES.length} caption styles</li>
             <li>Viral score, with reasons</li>
-            <li>9:16 · 4:5 · 1:1</li>
+            <li>16:9 · 9:16 · 4:5 · 1:1</li>
             <li>15 languages</li>
             <li>Offline after setup</li>
           </ul>
@@ -144,10 +144,10 @@ export default function ImportScreen({
                 <b>Score</b> — hook, numbers, emotion, pacing and payoff, with the reason attached.
               </li>
               <li>
-                <b>Reframe</b> — real crop preview in a 3D phone, focus control per clip.
+                <b>Reframe</b> — drag handles in a 16:9 editing window, focus control per clip.
               </li>
               <li>
-                <b>Export</b> — captions burned in, three aspect ratios in one pass.
+                <b>Export</b> — captions burned in, four aspect ratios in one pass, with live conversion speed.
               </li>
             </ol>
           </div>
