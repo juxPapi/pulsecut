@@ -230,11 +230,10 @@ export default function App() {
         setPlayhead(0);
         setStage('edit');
         setTab('style');
-        setProgress({ phase: 'Starting transcription', percent: 4 });
-        await api(`/api/projects/${created.id}/transcribe`, {
-          method: 'POST',
-          body: JSON.stringify(settings),
-        });
+        // Import lands in the editor without touching the audio. Transcription
+        // is an explicit editing action so long uploads never start a noisy CPU
+        // job before the user is ready.
+        setProgress({ phase: 'Video ready', percent: 100 });
         await refreshProjects();
       } catch (err) {
         setError(err.message);
@@ -243,7 +242,7 @@ export default function App() {
         setUploading(false);
       }
     },
-    [refreshProjects, settings]
+    [refreshProjects]
   );
 
   const retranscribe = useCallback(async () => {
@@ -356,7 +355,6 @@ export default function App() {
             <strong>PulseCut</strong>
             <span className="brand-sub">local studio</span>
           </div>
-          <span className="badge-local">100% local</span>
         </div>
 
         <StageNav stage={activeStage} onStage={setStage} hasProject={Boolean(project)} variant="top" />
@@ -402,8 +400,6 @@ export default function App() {
           <ImportScreen
             health={health}
             projects={projects}
-            settings={settings}
-            onSettings={setSettings}
             onUpload={handleUpload}
             onOpen={openProject}
             onDelete={deleteProject}
@@ -444,7 +440,8 @@ export default function App() {
                 options={options}
                 playhead={playhead}
                 onPlayhead={setPlayhead}
-                onFrame={(frame) => updateClip(frame)}
+                onFrame={(patch) => updateClip(patch)}
+                onTranscribe={retranscribe}
                 transcribing={transcribing}
               />
 

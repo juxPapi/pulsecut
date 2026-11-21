@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 675" preserveAspectRatio="xMidYMid slice">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#101d43"/>
+      <stop offset="0.35" stop-color="#9e3b74"/>
+      <stop offset="0.62" stop-color="#ff9a5c"/>
+      <stop offset="1" stop-color="#1a1024"/>
+    </linearGradient>
+    <radialGradient id="sun" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#fff6c9"/>
+      <stop offset="0.5" stop-color="#ffbd68"/>
+      <stop offset="1" stop-color="#ff5a47" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="haze" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#c8ff3d" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#c8ff3d" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="road" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#20283a"/>
+      <stop offset="1" stop-color="#080c14"/>
+    </linearGradient>
+    <pattern id="lines" width="14" height="14" patternUnits="userSpaceOnUse">
+      <path d="M0 13.5H14" stroke="#ffffff" stroke-opacity="0.035"/>
+    </pattern>
+    <filter id="blur"><feGaussianBlur stdDeviation="12"/></filter>
+  </defs>
+
+  <rect width="1200" height="675" fill="url(#sky)"/>
+  <circle cx="760" cy="300" r="250" fill="url(#sun)"/>
+  <circle cx="760" cy="300" r="130" fill="#ffd48b" opacity="0.78"/>
+  <ellipse cx="760" cy="300" rx="250" ry="52" fill="none" stroke="#ffe0a3" stroke-opacity="0.25" stroke-width="6" filter="url(#blur)"/>
+
+  <circle cx="180" cy="420" r="240" fill="url(#haze)" opacity="0.55"/>
+
+  <!-- skyline -->
+  <path d="M0 430h48V320h36v110h40V260h44v170h34V350h52v80h44V286h38v144h46V330h50v100h44V248h40v182h48V318h50v112h44V276h36v154h48V340h40v90h44V300h38v130h50V330h52v100h50V360h42v70h54V675H0Z" fill="#100f1e"/>
+  <g fill="#ff5a47" opacity="0.7">
+    <rect x="96" y="285" width="5" height="9"/><rect x="196" y="318" width="5" height="9"/>
+    <rect x="320" y="305" width="5" height="9"/><rect x="470" y="272" width="5" height="9"/>
+    <rect x="620" y="300" width="5" height="9"/><rect x="820" y="290" width="5" height="9"/>
+    <rect x="1010" y="320" width="5" height="9"/><rect x="1120" y="380" width="5" height="9"/>
+  </g>
+  <g fill="#54e7ff" opacity="0.45">
+    <rect x="130" y="360" width="4" height="7"/><rect x="380" y="372" width="4" height="7"/>
+    <rect x="710" y="350" width="4" height="7"/><rect x="960" y="400" width="4" height="7"/>
+  </g>
+
+  <!-- ocean -->
+  <path d="M0 470c180-22 360-22 540 0s360 22 660 0v80H0Z" fill="#0d2333"/>
+  <g stroke="#7ce9ff" stroke-opacity="0.22" stroke-width="2">
+    <path d="M60 500h120M260 520h160M520 494h140M820 520h180M980 486h140"/>
+  </g>
+
+  <!-- highway and car -->
+  <path d="M330 675 560 470h110l230 205Z" fill="url(#road)"/>
+  <path d="M612 490h14l6 185h-28Z" fill="#ffd166" opacity="0.35"/>
+  <g transform="translate(510 520)">
+    <path d="M10 92c10-38 38-58 88-58h88c40 0 66 18 90 50l28 20c6 4 5 14-3 16H10c-7 0-10-8-6-14Z" fill="#05070c"/>
+    <path d="M112 36c24-24 52-34 92-34h30c32 0 54 12 70 34Z" fill="#1a2533"/>
+    <path d="M40 92h40v14H40ZM252 92h40v14h-40Z" fill="#ff5a47" opacity="0.85"/>
+    <circle cx="82" cy="122" r="24" fill="#06080c" stroke="#39445a" stroke-width="5"/>
+    <circle cx="250" cy="122" r="24" fill="#06080c" stroke="#39445a" stroke-width="5"/>
+    <path d="M124 42c18-12 38-16 62-16h16c20 0 34 5 45 14Z" fill="#4d6b86" opacity="0.45"/>
+  </g>
+
+  <!-- palms -->
+  <g fill="#050a10">
+    <path d="M86 675V418h10v257Z"/><path d="M91 420c-48-42-82-36-86-32 34 4 62 20 86 48 12-35 42-57 74-63-38 12-64 29-74 47Z"/>
+    <path d="M1090 675V440h10v235Z"/><path d="M1095 442c-42-36-72-31-76-28 30 3 55 17 76 42 10-31 37-50 65-55-34 10-56 25-65 41Z"/>
+  </g>
+
+  <rect width="1200" height="675" fill="url(#lines)"/>
+  <rect width="1200" height="675" fill="#07080b" opacity="0.18"/>
+</svg>

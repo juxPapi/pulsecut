@@ -1,0 +1,145 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice">
+  <defs>
+    <linearGradient id="sky1" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#101a3d"/>
+      <stop offset="0.55" stop-color="#38236b"/>
+      <stop offset="1" stop-color="#0a0d18"/>
+    </linearGradient>
+    <linearGradient id="sky2" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2a1436"/>
+      <stop offset="0.5" stop-color="#7a2f46"/>
+      <stop offset="1" stop-color="#100c17"/>
+    </linearGradient>
+    <linearGradient id="skyMain" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#101f45"/>
+      <stop offset="0.38" stop-color="#d94f79"/>
+      <stop offset="0.63" stop-color="#ff9b5f"/>
+      <stop offset="1" stop-color="#120d1e"/>
+    </linearGradient>
+    <linearGradient id="sky4" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0b1b2b"/>
+      <stop offset="0.5" stop-color="#144b63"/>
+      <stop offset="1" stop-color="#070d15"/>
+    </linearGradient>
+    <linearGradient id="sky5" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#152c3a"/>
+      <stop offset="0.5" stop-color="#1f6b62"/>
+      <stop offset="1" stop-color="#0a1218"/>
+    </linearGradient>
+    <radialGradient id="sun" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#fff5c2"/>
+      <stop offset="0.55" stop-color="#ffb65f"/>
+      <stop offset="1" stop-color="#ff5a47" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowLime" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#c8ff3d" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#c8ff3d" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowCyan" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#54e7ff" stop-opacity="0.5"/>
+      <stop offset="1" stop-color="#54e7ff" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="scan" width="6" height="6" patternUnits="userSpaceOnUse">
+      <path d="M0 5.5H6" stroke="#ffffff" stroke-opacity="0.035" stroke-width="1"/>
+    </pattern>
+    <filter id="soft"><feGaussianBlur stdDeviation="18"/></filter>
+  </defs>
+
+  <rect width="1600" height="900" fill="#07080b"/>
+
+  <!-- sci-fi panel -->
+  <g>
+    <rect width="280" height="900" fill="url(#sky1)"/>
+    <circle cx="140" cy="230" r="120" fill="url(#glowCyan)"/>
+    <circle cx="140" cy="230" r="42" fill="#b9f4ff" opacity="0.65"/>
+    <ellipse cx="140" cy="230" rx="118" ry="27" fill="none" stroke="#8be9ff" stroke-opacity="0.35" stroke-width="3" transform="rotate(-18 140 230)"/>
+    <path d="M0 610 80 500 140 560 220 440 280 520V900H0Z" fill="#0d1430"/>
+    <path d="M0 700 92 610 180 680 280 590V900H0Z" fill="#121b3d"/>
+    <g stroke="#7df0ff" stroke-opacity="0.4" stroke-width="1">
+      <path d="M20 760h240M20 790h240M20 820h240"/>
+    </g>
+  </g>
+
+  <!-- fantasy panel -->
+  <g transform="translate(280 0)">
+    <rect width="280" height="900" fill="url(#sky2)"/>
+    <circle cx="150" cy="250" r="130" fill="url(#glowLime)"/>
+    <path d="M0 560 70 430 120 500 190 360 280 520V900H0Z" fill="#2a1729"/>
+    <path d="M60 900V560l45-70 45 70v340Z" fill="#180f1d"/>
+    <path d="M180 900V470l38-54 42 74v410Z" fill="#1a1020"/>
+    <g fill="#ffd166" opacity="0.5">
+      <circle cx="108" cy="505" r="3"/><circle cx="218" cy="430" r="3"/><circle cx="62" cy="620" r="2"/>
+    </g>
+  </g>
+
+  <!-- main Vice City panel -->
+  <g transform="translate(560 0)">
+    <rect width="480" height="900" fill="url(#skyMain)"/>
+    <circle cx="245" cy="330" r="190" fill="url(#sun)" opacity="0.95"/>
+    <circle cx="245" cy="330" r="104" fill="#ffd18a" opacity="0.75"/>
+    <path d="M0 520h480v380H0Z" fill="#151126"/>
+    <path d="M0 520 40 420h34l16 100M90 520l22-150h30l12 150M160 520l30-210h38l24 210M270 520l18-130h34l20 130M350 520l26-180h32l18 180M430 520l16-120h24l10 120" fill="#0a0a15"/>
+    <g fill="#ff5a47" opacity="0.65">
+      <rect x="48" y="450" width="5" height="8"/><rect x="118" y="410" width="5" height="8"/>
+      <rect x="190" y="370" width="5" height="8"/><rect x="300" y="430" width="5" height="8"/>
+      <rect x="382" y="390" width="5" height="8"/><rect x="452" y="445" width="5" height="8"/>
+    </g>
+    <path d="M0 700h480v200H0Z" fill="#0a111d"/>
+    <path d="M120 900 205 700h70l85 200Z" fill="#151d29"/>
+    <path d="M232 700h16l4 200h-24Z" fill="#ffd166" opacity="0.25"/>
+    <path d="M0 900c120-72 360-72 480 0Z" fill="#0b1521"/>
+    <!-- palms -->
+    <g fill="#050a10">
+      <path d="M58 900V610h7v290Z"/><path d="M61 612c-34-30-56-25-58-22 24 2 44 14 58 34 8-24 28-38 50-42-26 8-43 20-50 30Z"/>
+      <path d="M420 900V640h7v260Z"/><path d="M423 642c-30-26-50-22-52-19 22 2 40 12 52 30 8-21 25-34 45-37-24 7-39 18-45 26Z"/>
+    </g>
+    <!-- car silhouette -->
+    <g transform="translate(178 768)">
+      <path d="M8 54c8-22 24-34 50-34h58c22 0 38 10 52 30l18 12c4 3 4 10-2 12H8c-5 0-7-6-4-10Z" fill="#05070d"/>
+      <path d="M66 24c14-14 30-20 50-20h18c18 0 30 6 40 18Z" fill="#1c2736"/>
+      <circle cx="48" cy="76" r="14" fill="#080a0e" stroke="#303a49" stroke-width="3"/>
+      <circle cx="154" cy="76" r="14" fill="#080a0e" stroke="#303a49" stroke-width="3"/>
+      <path d="M20 58h24v8H20ZM142 58h22v8h-22Z" fill="#ff5a47" opacity="0.8"/>
+    </g>
+  </g>
+
+  <!-- racing panel -->
+  <g transform="translate(1040 0)">
+    <rect width="280" height="900" fill="url(#sky4)"/>
+    <circle cx="140" cy="300" r="140" fill="url(#glowCyan)"/>
+    <path d="M0 540 70 460l40 40 70-120 100 170v350H0Z" fill="#08131f"/>
+    <path d="M0 900 140 610l140 290Z" fill="#0c1c2b"/>
+    <g stroke="#c8ff3d" stroke-width="4" stroke-opacity="0.5">
+      <path d="M140 650v30M140 710v40M140 780v50"/>
+    </g>
+    <path d="M96 760c10-20 26-30 48-30h20c18 0 30 8 40 24l14 10H86Z" fill="#05090e"/>
+    <circle cx="112" cy="774" r="11" fill="#05090e" stroke="#4d5a6b" stroke-width="3"/>
+    <circle cx="172" cy="774" r="11" fill="#05090e" stroke="#4d5a6b" stroke-width="3"/>
+  </g>
+
+  <!-- island panel -->
+  <g transform="translate(1320 0)">
+    <rect width="280" height="900" fill="url(#sky5)"/>
+    <circle cx="190" cy="240" r="110" fill="url(#glowLime)"/>
+    <path d="M0 560c60-30 100-90 140-90s80 60 140 90v340H0Z" fill="#0b1d22"/>
+    <path d="M0 660c70-20 180-20 280 0v240H0Z" fill="#071218"/>
+    <g fill="#050d10">
+      <path d="M70 900V610h6v290Z"/><path d="M73 612c-26-22-44-18-46-16 19 2 34 10 46 25 7-18 22-29 40-32-21 6-35 14-40 23Z"/>
+      <path d="M220 900V650h6v250Z"/><path d="M223 652c-24-20-40-17-42-15 18 2 31 9 42 23 6-17 20-27 36-29-19 6-32 13-36 21Z"/>
+    </g>
+    <path d="M0 780h280v120H0Z" fill="#0c1a1f"/>
+    <g stroke="#ffd166" stroke-opacity="0.35" stroke-width="2">
+      <path d="M20 820h240M20 850h240"/>
+    </g>
+  </g>
+
+  <!-- panel seams and texture -->
+  <g stroke-width="2">
+    <path d="M280 0v900" stroke="#c8ff3d" stroke-opacity="0.35"/>
+    <path d="M560 0v900" stroke="#ff5a47" stroke-opacity="0.5"/>
+    <path d="M1040 0v900" stroke="#54e7ff" stroke-opacity="0.35"/>
+    <path d="M1320 0v900" stroke="#c8ff3d" stroke-opacity="0.3"/>
+  </g>
+  <rect width="1600" height="900" fill="url(#scan)"/>
+  <rect width="1600" height="900" fill="#07080b" opacity="0.2"/>
+</svg>

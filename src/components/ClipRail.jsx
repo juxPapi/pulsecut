@@ -122,7 +122,7 @@ export default function ClipRail({
         </div>
         <div className="rail-actions">
           <button className="btn ghost small" onClick={onRetranscribe} disabled={transcribing} type="button">
-            Re-transcribe
+            {transcribing ? 'Generating…' : project.clips?.length ? 'Re-transcribe' : 'Generate transcription'}
           </button>
           <button
             className="btn primary small"

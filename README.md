@@ -2,23 +2,25 @@
 
 **Long videos in. Short clips out.**
 
-PulseCut is a local-first studio that turns a long video into vertical, captioned clips ready for TikTok, Reels and Shorts. Drop a file, and the app transcribes it with Whisper **on your own machine**, finds the moments worth posting, lets you restyle the captions and framing, and renders finished MP4s with FFmpeg. Nothing is uploaded, there are no credits, and there is no account.
+PulseCut is a local-first studio that turns a long video into vertical, captioned clips ready for TikTok, Reels and Shorts. Drop a file to import it, then generate the transcript with Whisper **on your own machine** only when you are ready. PulseCut finds the moments worth posting, lets you pick the exact section and framing, and renders finished MP4s with FFmpeg. Nothing is uploaded, there are no credits, and there is no account.
 
 ![PulseCut import screen](screenshots/01-import-screen.png)
 
 ## Screenshots
 
-| Studio | Post details | Export queue |
-| --- | --- | --- |
-| ![Caption studio](screenshots/02-studio-captions.png) | ![Post panel](screenshots/03-post-details.png) | ![Export panel](screenshots/04-export-panel.png) |
+| Import landing | Editing tools | Post details | Export queue |
+| --- | --- | --- | --- |
+| ![Import landing](screenshots/05-import-landing.png) | ![Editing tools](screenshots/06-editing-tools.png) | ![Post panel](screenshots/03-post-details.png) | ![Export panel](screenshots/04-export-panel.png) |
 
 ## Features
 
-- **100% local pipeline** — audio extraction with FFmpeg, speech recognition with Whisper through `@huggingface/transformers` (ONNX runtime). Models are cached in `data/models/` after the first download, so later runs work offline.
+- **Local pipeline** — audio extraction with FFmpeg, speech recognition with Whisper through `@huggingface/transformers` (ONNX runtime). Models are cached in `data/models/` after the first download, so later runs work offline.
+- **One-window import landing** — intro, drop zone, live pipeline and recent videos fit on one screen. Original game-inspired artwork sets the backdrop, with GTA6 as the “Most popular” highlight.
+- **Manual transcription** — importing never starts a CPU-heavy job by itself. Use **Generate transcription** in the editing window when you want captions and clip suggestions.
 - **Automatic moment detection** — scores up to 8 candidate clips from the transcript using hooks, pacing, completeness and word density, with human-readable reasons for each score.
-- **Editable clips** — trim start/end times, rewrite titles and hashtags, and nudge the subject position/zoom for every clip.
+- **Editable clips** — set exact in/out points or drop the playhead into the section controls, rewrite titles and hashtags, and nudge the subject position/zoom for every clip.
 - **Live 16:9 editing window** — scrub a clip in a widescreen frame by default, and switch the preview to 9:16, 4:5 or 1:1 from the ratio tabs. Four video layouts: Fill, Blur, Split and Triple.
-- **Custom framing handles** — drag the crop box or its four corner handles directly on the preview to reframe and zoom; the sliders and the FFmpeg renderer stay in sync with the same values.
+- **Custom framing handles** — drag the crop box, its four edge handles (one-axis horizontal/vertical framing) or its four corner handles to zoom. Angle presets and exact sliders stay in sync with the FFmpeg renderer.
 - **87 caption styles** across 6 families (Bold Pop, Minimal Clean, Neon Nights, Boxed & Blocked, Retro Type, Karaoke Glow), with font, colour, size, position, opacity and tilt controls.
 - **15 languages**, including auto-detect, English, Hindi, Urdu, Hinglish, Spanish, French, German, Portuguese, Arabic, Turkish, Indonesian, Bengali, Tamil and Russian.
 - **Three Whisper model sizes** — Tiny (~75 MB), Base (~145 MB, recommended) and Small (~480 MB).

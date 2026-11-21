@@ -7,7 +7,17 @@ import { OUTRO_DURATION, OUTRO_BACKGROUND, OUTRO_LIME, OUTRO_INK, OUTRO_TEXT, CH
 let blurBuffer = null;
 
 const CORNERS = ['nw', 'ne', 'sw', 'se'];
+const EDGES = ['n', 'e', 's', 'w'];
 const MIN_CROP = 1 / ZOOM_MAX;
+const MIN_SECTION = 4;
+const ANGLE_PRESETS = [
+  { id: 'center', label: 'Center', frame: { focus: 0.5, focusY: 0.5, zoom: 1 } },
+  { id: 'left', label: 'Left', frame: { focus: 0.24, focusY: 0.5, zoom: 1.15 } },
+  { id: 'right', label: 'Right', frame: { focus: 0.76, focusY: 0.5, zoom: 1.15 } },
+  { id: 'high', label: 'High', frame: { focus: 0.5, focusY: 0.24, zoom: 1.15 } },
+  { id: 'low', label: 'Low', frame: { focus: 0.5, focusY: 0.76, zoom: 1.15 } },
+  { id: 'close', label: 'Close', frame: { focus: 0.5, focusY: 0.5, zoom: 1.6 } },
+];
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
@@ -126,6 +136,7 @@ export default function PhonePreview({
   playhead,
   onPlayhead,
   onFrame,
+  onTranscribe,
   transcribing,
 }) {
   const videoRef = useRef(null);
@@ -139,6 +150,8 @@ export default function PhonePreview({
   const [previewUrl, setPreviewUrl] = useState(null);
   const [previewing, setPreviewing] = useState(false);
   const [previewError, setPreviewError] = useState(null);
+  const [section, setSection] = useState(() => ({ start: clip?.start ?? 0, end: clip?.end ?? 0 }));
+  const [sectionError, setSectionError] = useState(null);
 
   const aspectInfo = ASPECTS[aspect] || ASPECTS['16:9'];
   const frameValue = resolveFrame(frame);
@@ -206,6 +219,37 @@ export default function PhonePreview({
     commitFrame(next);
   };
 
+  const applyPreset = (preset) => {
+    if (!clip || previewUrl) return;
+    commitFrame(resolveFrame(preset.frame));
+  };
+
+  // Editing the in/out points drops a different slice of the source into the
+  // same preset frame. The server snaps them to real speech before rendering.
+  const commitSection = (patch) => {
+    const duration = project?.duration || Number.MAX_SAFE_INTEGER;
+    const start = clamp(Number(patch.start ?? section.start), 0, duration);
+    const end = clamp(Number(patch.end ?? section.end), 0, duration);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end - start < MIN_SECTION) {
+      setSectionError(`Keep at least ${MIN_SECTION} seconds.`);
+      return;
+    }
+    setSectionError(null);
+    setSection({ start, end });
+    onFrame?.({ start, end });
+    seekVideo(start);
+    emitPlayhead(start);
+  };
+
+  const usePlayheadFor = (edge) => {
+    const time = clamp(playhead, 0, project?.duration || playhead);
+    if (edge === 'in') {
+      commitSection({ start: time, end: Math.max(section.end, time + MIN_SECTION) });
+    } else {
+      commitSection({ start: Math.min(section.start, time - MIN_SECTION), end: time });
+    }
+  };
+
   useEffect(
     () => () => {
       if (frameRafRef.current) cancelAnimationFrame(frameRafRef.current);
@@ -223,7 +267,7 @@ export default function PhonePreview({
     };
   };
 
-  const beginFrameDrag = (mode, corner = null) => (event) => {
+  const beginFrameDrag = (mode, handle = null) => (event) => {
     if (!clip || previewUrl || event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
@@ -234,7 +278,7 @@ export default function PhonePreview({
     }
     dragRef.current = {
       mode,
-      corner,
+      handle,
       pointerId: event.pointerId,
       start: pointerPosition(event),
       frame: resolveFrame(frameRef.current),
@@ -256,8 +300,19 @@ export default function PhonePreview({
       return;
     }
 
-    const signX = drag.corner.includes('w') ? -1 : 1;
-    const signY = drag.corner.includes('n') ? -1 : 1;
+    // Edge handles slide one axis at a time. This gives dedicated horizontal
+    // and vertical framing without changing the crop size.
+    if (drag.mode === 'edge') {
+      if (drag.handle === 'e' || drag.handle === 'w') {
+        updateFrame({ focus: clamp(drag.frame.focus + point.x - drag.start.x, 0, 1) });
+      } else {
+        updateFrame({ focusY: clamp(drag.frame.focusY + point.y - drag.start.y, 0, 1) });
+      }
+      return;
+    }
+
+    const signX = drag.handle.includes('w') ? -1 : 1;
+    const signY = drag.handle.includes('n') ? -1 : 1;
     const opposite = {
       x: signX > 0 ? drag.box.left : drag.box.left + drag.box.size,
       y: signY > 0 ? drag.box.top : drag.box.top + drag.box.size,
@@ -462,6 +517,12 @@ export default function PhonePreview({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clip?.id]);
 
+  // Keep the section fields in step with the server's snapped in/out points.
+  useEffect(() => {
+    setSection({ start: clip?.start ?? 0, end: clip?.end ?? 0 });
+    setSectionError(null);
+  }, [clip?.id, clip?.start, clip?.end]);
+
   // The like & subscribe end card starts right after the content being previewed or played.
   useEffect(() => {
     if (!clip) {
@@ -624,6 +685,14 @@ export default function PhonePreview({
           <span className="muted-label">
             {aspectInfo.width}×{aspectInfo.height} · {aspectInfo.short}
           </span>
+          <button
+            className={`btn ghost small ${transcribing ? 'is-working' : ''}`}
+            onClick={onTranscribe}
+            disabled={!project || transcribing}
+            type="button"
+          >
+            {transcribing ? 'Generating…' : clip?.cues?.length ? 'Regenerate transcription' : 'Generate transcription'}
+          </button>
           <button className="btn ghost small" onClick={renderBurnIn} disabled={!clip || previewing} type="button">
             {previewing ? 'Rendering…' : 'Burn-in preview'}
           </button>
@@ -681,7 +750,7 @@ export default function PhonePreview({
                   style={cropStyle}
                   role="group"
                   tabIndex={0}
-                  aria-label="Framing controls. Drag to move the crop, use the corners to zoom."
+                  aria-label="Preset frame. Drag to move the crop, edges for one-axis framing, corners to zoom."
                   onPointerDown={beginFrameDrag('pan')}
                   onPointerMove={moveFrameDrag}
                   onPointerUp={endFrameDrag}
@@ -690,6 +759,19 @@ export default function PhonePreview({
                 >
                   <span className="frame-grid" aria-hidden="true" />
                   <span className="frame-center" aria-hidden="true" />
+                  {EDGES.map((edge) => (
+                    <button
+                      key={edge}
+                      type="button"
+                      className={`frame-handle edge-handle handle-edge-${edge}`}
+                      aria-label={`Drag ${edge} edge to adjust ${edge === 'n' || edge === 's' ? 'vertical' : 'horizontal'} framing`}
+                      onPointerDown={beginFrameDrag('edge', edge)}
+                      onPointerMove={moveFrameDrag}
+                      onPointerUp={endFrameDrag}
+                      onPointerCancel={endFrameDrag}
+                      onKeyDown={handleFrameKeyDown}
+                    />
+                  ))}
                   {CORNERS.map((corner) => (
                     <button
                       key={corner}
@@ -704,7 +786,7 @@ export default function PhonePreview({
                     />
                   ))}
                 </div>
-                <span className="frame-hint">Drag to reframe · corners to zoom</span>
+                <span className="frame-hint">Drag to reframe · edges: one axis · corners: zoom</span>
               </div>
             )}
           </div>
@@ -759,61 +841,126 @@ export default function PhonePreview({
         </div>
       </div>
 
-      <div className="focus-row">
-        <label className="frame-control">
-          <span>
-            Horizontal <b>{Math.round(frameValue.focus * 100)}%</b>
-          </span>
-          <input
-            type="range"
-            min="0"
-            max="1"
-            step="0.01"
-            value={frameValue.focus}
-            onChange={(event) => updateFrame({ focus: Number(event.target.value) })}
-            onPointerUp={() => commitFrame()}
-            onKeyUp={() => commitFrame()}
-            disabled={!clip}
-          />
-        </label>
-        <label className="frame-control">
-          <span>
-            Vertical <b>{Math.round(frameValue.focusY * 100)}%</b>
-          </span>
-          <input
-            type="range"
-            min="0"
-            max="1"
-            step="0.01"
-            value={frameValue.focusY}
-            onChange={(event) => updateFrame({ focusY: Number(event.target.value) })}
-            onPointerUp={() => commitFrame()}
-            onKeyUp={() => commitFrame()}
-            disabled={!clip}
-          />
-        </label>
-        <label className="frame-control">
-          <span>
-            Zoom <b>{`×${frameValue.zoom.toFixed(2)}`}</b>
-          </span>
-          <input
-            type="range"
-            min={ZOOM_MIN}
-            max={ZOOM_MAX}
-            step="0.01"
-            value={frameValue.zoom}
-            onChange={(event) => updateFrame({ zoom: Number(event.target.value) })}
-            onPointerUp={() => commitFrame()}
-            onKeyUp={() => commitFrame()}
-            disabled={!clip}
-          />
-        </label>
-        <div className="focus-foot">
-          <button className="btn ghost small" type="button" onClick={resetFrame} disabled={!clip}>
-            Reset frame
-          </button>
-          <span className="muted-label">Drag the on-screen handles or scroll to zoom</span>
-          {clip && <span className="muted-label">{clip.score}/100 viral score</span>}
+      <div className="editor-tools">
+        <div className="tool-group frame-tools">
+          <div className="tool-heading">
+            <span>Preset frame</span>
+            <small>Drag the canvas or use exact controls</small>
+          </div>
+          <div className="angle-presets" role="group" aria-label="Framing angle presets">
+            {ANGLE_PRESETS.map((preset) => (
+              <button key={preset.id} type="button" onClick={() => applyPreset(preset)} disabled={!clip || Boolean(previewUrl)}>
+                {preset.label}
+              </button>
+            ))}
+          </div>
+          <div className="frame-sliders">
+            <label className="frame-control">
+              <span>
+                Horizontal <b>{Math.round(frameValue.focus * 100)}%</b>
+              </span>
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.01"
+                value={frameValue.focus}
+                onChange={(event) => updateFrame({ focus: Number(event.target.value) })}
+                onPointerUp={() => commitFrame()}
+                onKeyUp={() => commitFrame()}
+                disabled={!clip}
+              />
+            </label>
+            <label className="frame-control">
+              <span>
+                Vertical <b>{Math.round(frameValue.focusY * 100)}%</b>
+              </span>
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.01"
+                value={frameValue.focusY}
+                onChange={(event) => updateFrame({ focusY: Number(event.target.value) })}
+                onPointerUp={() => commitFrame()}
+                onKeyUp={() => commitFrame()}
+                disabled={!clip}
+              />
+            </label>
+            <label className="frame-control">
+              <span>
+                Zoom <b>{`×${frameValue.zoom.toFixed(2)}`}</b>
+              </span>
+              <input
+                type="range"
+                min={ZOOM_MIN}
+                max={ZOOM_MAX}
+                step="0.01"
+                value={frameValue.zoom}
+                onChange={(event) => updateFrame({ zoom: Number(event.target.value) })}
+                onPointerUp={() => commitFrame()}
+                onKeyUp={() => commitFrame()}
+                disabled={!clip}
+              />
+            </label>
+          </div>
+          <div className="tool-foot">
+            <button className="btn ghost small" type="button" onClick={resetFrame} disabled={!clip}>
+              Reset frame
+            </button>
+            {clip && <span className="muted-label">{clip.score}/100 viral score</span>}
+          </div>
+        </div>
+
+        <div className="tool-group section-tools">
+          <div className="tool-heading">
+            <span>Clip section</span>
+            <small>Choose what drops into this frame</small>
+          </div>
+          <div className="section-inputs">
+            <label>
+              <span>In</span>
+              <input
+                type="number"
+                min="0"
+                max={project?.duration}
+                step="0.1"
+                value={section.start}
+                onChange={(event) => setSection((prev) => ({ ...prev, start: event.target.value }))}
+                onBlur={() => commitSection(section)}
+                onKeyDown={(event) => event.key === 'Enter' && event.currentTarget.blur()}
+                disabled={!clip}
+              />
+            </label>
+            <label>
+              <span>Out</span>
+              <input
+                type="number"
+                min="0"
+                max={project?.duration}
+                step="0.1"
+                value={section.end}
+                onChange={(event) => setSection((prev) => ({ ...prev, end: event.target.value }))}
+                onBlur={() => commitSection(section)}
+                onKeyDown={(event) => event.key === 'Enter' && event.currentTarget.blur()}
+                disabled={!clip}
+              />
+            </label>
+          </div>
+          <div className="section-actions">
+            <button className="btn ghost small" type="button" onClick={() => usePlayheadFor('in')} disabled={!clip}>
+              In at playhead
+            </button>
+            <button className="btn ghost small" type="button" onClick={() => usePlayheadFor('out')} disabled={!clip}>
+              Out at playhead
+            </button>
+          </div>
+          <div className="tool-foot">
+            <span className="muted-label">
+              {clip ? `${formatTime(Number(section.start) || 0)} → ${formatTime(Number(section.end) || 0)}` : 'Import a clip first'}
+            </span>
+            {sectionError && <span className="tool-error">{sectionError}</span>}
+          </div>
         </div>
       </div>
     </section>
