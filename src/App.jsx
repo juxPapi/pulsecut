@@ -102,11 +102,24 @@ export default function App() {
 
   const projectRef = useRef(null);
   projectRef.current = project;
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
+  const lastCaptionRef = useRef(null);
 
   const loadProject = useCallback(async (id) => {
     const data = await api(`/api/projects/${id}`);
     setProject(data.project);
     setLayout(resolveLayout(data.project.layout));
+    const saved = data.project.caption;
+    setOptions((prev) => ({
+      ...prev,
+      captionX: saved ? saved.x : null,
+      captionY: saved ? saved.y : null,
+    }));
+    lastCaptionRef.current = {
+      id,
+      key: saved ? `${saved.x}|${saved.y}` : 'none',
+    };
     setActiveClipId((current) => {
       const clips = data.project.clips || [];
       if (current && clips.some((clip) => clip.id === current)) return current;
@@ -133,6 +146,24 @@ export default function App() {
     refreshProjects().catch(() => {});
     refreshJobs().catch(() => {});
   }, [refreshProjects, refreshJobs]);
+
+  // Manually dragged captions are saved to the project, so reopening a video
+  // (or rendering from another tab) keeps the exact same placement.
+  useEffect(() => {
+    const id = project?.id;
+    if (!id) return undefined;
+    const placed = Number.isFinite(options.captionX) && Number.isFinite(options.captionY);
+    const value = placed ? { x: options.captionX, y: options.captionY } : null;
+    const key = placed ? `${options.captionX}|${options.captionY}` : 'none';
+    if (lastCaptionRef.current?.id === id && lastCaptionRef.current?.key === key) return undefined;
+    const timer = setTimeout(() => {
+      api(`/api/projects/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ caption: value }),
+      }).catch((err) => setError(err.message));
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [options.captionX, options.captionY, project?.id]);
 
   useEvents((event, data) => {
     const current = projectRef.current;
@@ -176,6 +207,14 @@ export default function App() {
 
   const setOption = useCallback((key, value) => {
     setOptions((prev) => ({ ...prev, [key]: value }));
+  }, []);
+
+  const setCaption = useCallback((position) => {
+    setOptions((prev) => ({
+      ...prev,
+      captionX: position ? position.x : null,
+      captionY: position ? position.y : null,
+    }));
   }, []);
 
   // Stable identity keeps the memoized transcript lines from re-rendering on
@@ -225,6 +264,7 @@ export default function App() {
         const { project: created } = await api('/api/upload', { method: 'POST', body: form });
         setProject(created);
         setLayout(resolveLayout(created.layout));
+        setOptions((prev) => ({ ...prev, captionX: null, captionY: null }));
         setActiveClipId(null);
         setJobs([]);
         setPlayhead(0);
@@ -326,6 +366,7 @@ export default function App() {
 
   const startNewVideo = useCallback(() => {
     setProject(null);
+    setOptions((prev) => ({ ...prev, captionX: null, captionY: null }));
     setActiveClipId(null);
     setJobs([]);
     setProgress(null);
@@ -441,6 +482,7 @@ export default function App() {
                 playhead={playhead}
                 onPlayhead={setPlayhead}
                 onFrame={(patch) => updateClip(patch)}
+                onCaption={setCaption}
                 onTranscribe={retranscribe}
                 transcribing={transcribing}
               />
@@ -511,7 +553,14 @@ export default function App() {
               </nav>
               <div className="panel-body">
                 {tab === 'style' && (
-                  <StylePanel styleId={styleId} onStyle={setStyleId} options={options} onChange={setOption} style={style} />
+                  <StylePanel
+                    styleId={styleId}
+                    onStyle={setStyleId}
+                    options={options}
+                    onChange={setOption}
+                    onCaption={setCaption}
+                    style={style}
+                  />
                 )}
                 {tab === 'post' && <PostPanel clip={clip} onUpdate={updateClip} />}
                 {tab === 'export' && <ExportPanel {...exportProps} formatOptions={Object.keys(ASPECTS)} />}

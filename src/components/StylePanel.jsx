@@ -25,9 +25,13 @@ function StyleTile({ item, active, onClick }) {
   );
 }
 
-export default function StylePanel({ styleId, onStyle, options, onChange, style }) {
+export default function StylePanel({ styleId, onStyle, options, onChange, onCaption, style }) {
   const [group, setGroup] = useState('All');
   const [query, setQuery] = useState('');
+  const manual =
+    style?.captionX !== null && style?.captionX !== undefined &&
+    style?.captionY !== null && style?.captionY !== undefined &&
+    Number.isFinite(Number(style.captionX)) && Number.isFinite(Number(style.captionY));
 
   const filtered = useMemo(() => {
     const search = query.trim().toLowerCase();
@@ -110,6 +114,7 @@ export default function StylePanel({ styleId, onStyle, options, onChange, style 
               onChange('opacity', 1);
               onChange('boxOpacity', null);
               onChange('position', 'bottom');
+              onCaption?.(null);
             }}
           >
             Reset
@@ -225,6 +230,45 @@ export default function StylePanel({ styleId, onStyle, options, onChange, style 
               onChange={(event) => onChange('uppercase', event.target.checked)}
             />
           </label>
+        </div>
+
+        <div className="caption-placement">
+          <label className="field switch">
+            <span>Place manually</span>
+            <input
+              type="checkbox"
+              checked={manual}
+              onChange={(event) => onCaption?.(event.target.checked ? { x: 0.5, y: 0.82 } : null)}
+            />
+          </label>
+          {manual ? (
+            <div className="caption-xy">
+              <label className="field">
+                <span>X <b>{Math.round(Number(style.captionX) * 100)}%</b></span>
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  value={Number(style.captionX)}
+                  onChange={(event) => onCaption?.({ x: Number(event.target.value), y: Number(style.captionY) })}
+                />
+              </label>
+              <label className="field">
+                <span>Y <b>{Math.round(Number(style.captionY) * 100)}%</b></span>
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  value={Number(style.captionY)}
+                  onChange={(event) => onCaption?.({ x: Number(style.captionX), y: Number(event.target.value) })}
+                />
+              </label>
+            </div>
+          ) : (
+            <span className="muted-label">Tick this, then drag the caption in the preview.</span>
+          )}
         </div>
       </div>
     </div>

@@ -1,8 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, formatTime } from '../api.js';
 import { ASPECTS, LAYOUTS } from '../../shared/captions.js';
-import { composeLayout, resolveFrame, ZOOM_MAX, ZOOM_MIN } from '../../shared/framing.js';
-import { OUTRO_DURATION, OUTRO_BACKGROUND, OUTRO_LIME, OUTRO_INK, OUTRO_TEXT, CHANNEL, OUTRO_GEOMETRY } from '../../shared/outro.js';
+import {
+  composeLayout,
+  resolveFrame,
+  resolveStacks,
+  stackCount,
+  stackLabels,
+  stackOffsetBounds,
+  ZOOM_MAX,
+  ZOOM_MIN,
+} from '../../shared/framing.js';
+import { OUTRO_DURATION, OUTRO_BACKGROUND, OUTRO_LIME, OUTRO_INK, OUTRO_TEXT, OUTRO_GEOMETRY } from '../../shared/outro.js';
 
 let blurBuffer = null;
 
@@ -136,39 +145,98 @@ export default function PhonePreview({
   playhead,
   onPlayhead,
   onFrame,
+  onCaption,
   onTranscribe,
   transcribing,
 }) {
-  const videoRef = useRef(null);
+  const videoRefs = useRef([]);
   const canvasRef = useRef(null);
   const frameSurfaceRef = useRef(null);
   const playheadRef = useRef(playhead);
   playheadRef.current = playhead;
   const [playing, setPlaying] = useState(false);
   const [muted, setMuted] = useState(false);
-  const [frame, setFrame] = useState(() => resolveFrame(clip));
+  const [stacks, setStacks] = useState(() =>
+    resolveStacks({
+      layout,
+      frame: clip || {},
+      stacks: clip?.stacks,
+      start: clip?.start ?? 0,
+      end: clip?.end ?? 0,
+      sourceDuration: project?.duration ?? 0,
+    })
+  );
+  const [activeStack, setActiveStack] = useState(0);
   const [previewUrl, setPreviewUrl] = useState(null);
   const [previewing, setPreviewing] = useState(false);
   const [previewError, setPreviewError] = useState(null);
   const [section, setSection] = useState(() => ({ start: clip?.start ?? 0, end: clip?.end ?? 0 }));
   const [sectionError, setSectionError] = useState(null);
+  const [offsetDrafts, setOffsetDrafts] = useState({});
+  const [captionDragging, setCaptionDragging] = useState(false);
+  const [captionMoving, setCaptionMoving] = useState(false);
 
   const aspectInfo = ASPECTS[aspect] || ASPECTS['16:9'];
-  const frameValue = resolveFrame(frame);
   const playback = project?.playback || null;
-  const videoSrc = `/api/media/${project.id}${playback?.status === 'ready' ? `?v=${playback.version}` : ''}`;
-
+  const videoSrc = project ? `/api/media/${project.id}${playback?.status === 'ready' ? `?v=${playback.version}` : ''}` : '';
+  const tiles = stackCount(layout);
+  const labels = stackLabels(layout);
+  const activeStackRef = useRef(activeStack);
+  activeStackRef.current = Math.min(activeStack, tiles - 1);
+  const stacksRef = useRef(stacks);
+  stacksRef.current = stacks;
+  const frameValue = stacks[Math.min(activeStack, stacks.length - 1)]?.frame || resolveFrame(clip);
   const frameRef = useRef(frameValue);
   frameRef.current = frameValue;
   const layoutRef = useRef(layout);
   layoutRef.current = layout;
+
+  // Each distinct source offset gets its own video element, so two stacks can
+  // play different moments at once. Equal offsets reuse one decoded video.
+  const groups = useMemo(() => {
+    const list = [];
+    stacks.forEach((stack, index) => {
+      const offset = stack.offset || 0;
+      let group = list.find((item) => Math.abs(item.offset - offset) < 0.005);
+      if (!group) {
+        group = { offset, key: offset.toFixed(2), indices: [] };
+        list.push(group);
+      }
+      group.indices.push(index);
+    });
+    return list;
+  }, [stacks]);
+  const groupOf = useMemo(
+    () => stacks.map((stack) => groups.findIndex((group) => Math.abs(group.offset - (stack.offset || 0)) < 0.005)),
+    [stacks, groups]
+  );
+  const groupOfRef = useRef(groupOf);
+  groupOfRef.current = groupOf;
+  const activeGroups = previewUrl ? [{ offset: 0, key: 'burn', indices: [0] }] : groups;
+  const primaryOffsetRef = useRef(previewUrl ? 0 : stacks[0]?.offset || 0);
+  primaryOffsetRef.current = previewUrl ? 0 : stacks[0]?.offset || 0;
+  // The burn-in preview is a short standalone file; its transport uses that
+  // file's 0-based timeline instead of the full source clip's in/out points.
+  const trackStart = previewUrl ? 0 : clip?.start ?? 0;
+  const trackEnd = previewUrl
+    ? Math.min(clip?.end - clip?.start || 0, 6) + OUTRO_DURATION
+    : clip?.end ?? 0;
+
   const drawnRef = useRef({});
+  const compositionKeyRef = useRef('');
   const contentEndRef = useRef(0);
   const lastEmittedRef = useRef(null);
   const dragRef = useRef(null);
+  const captionDragRef = useRef(null);
   const frameRafRef = useRef(0);
   const pendingFrameRef = useRef(null);
   const wheelCommitRef = useRef(0);
+  const trackSeekingRef = useRef(false);
+  const timeUpdateRef = useRef(() => {});
+  const painterRef = useRef({ start: () => {}, stop: () => {} });
+
+  const primaryVideo = () => videoRefs.current[0] || null;
+  const allVideos = () => videoRefs.current.filter(Boolean);
 
   // Remember the value we reported to the parent so a re-render with that same
   // playhead cannot turn into a second seek back into the video.
@@ -176,16 +244,68 @@ export default function PhonePreview({
     lastEmittedRef.current = time;
     onPlayhead(time);
   };
-  const seekVideo = (time) => {
-    const video = videoRef.current;
-    if (!video || !Number.isFinite(time)) return;
-    const target = Math.max(0, time);
-    if (Math.abs(video.currentTime - target) < 0.05) return;
-    video.currentTime = target > 0 ? target : 0.001;
+
+  /** Seek every decoded surface to the same master moment plus its own offset. */
+  const seekAll = (time) => {
+    if (!Number.isFinite(time)) return;
+    const max = Math.max(0.1, (project?.duration || time) - 0.02);
+    activeGroups.forEach((group, index) => {
+      const video = videoRefs.current[index];
+      if (!video) return;
+      const target = clamp(time + group.offset, 0.001, max);
+      if (Math.abs(video.currentTime - target) < 0.05) return;
+      video.currentTime = target;
+    });
+  };
+
+  // Two <video> elements can drift apart even when they play the same file.
+  // Nudge secondary surfaces back to their offset on the primary's timeupdate.
+  const syncStacks = (master) => {
+    if (previewUrl || !Number.isFinite(master)) return;
+    const max = Math.max(0.1, (project?.duration || master) - 0.02);
+    activeGroups.forEach((group, index) => {
+      if (index === 0) return;
+      const video = videoRefs.current[index];
+      if (!video) return;
+      const target = clamp(master + group.offset, 0.001, max);
+      if (Math.abs(video.currentTime - target) > 0.25) video.currentTime = target;
+    });
+  };
+
+  const pauseAll = () => {
+    allVideos().forEach((video) => video.pause());
+    setPlaying(false);
+  };
+
+  const goTo = (time) => {
+    const target = clamp(Number(time) || 0, trackStart, trackEnd || Number(time) || 0);
+    pauseAll();
+    seekAll(target);
+    emitPlayhead(target);
+    drawnRef.current.stamp = null;
+    draw();
+  };
+
+  const writeStacks = (next) => {
+    stacksRef.current = next;
+    setStacks(next);
   };
 
   // Coalesce drag/keyboard/wheel changes to one React render per animation frame.
-  // The canvas blur is expensive, so painting every pointermove would stutter.
+  const applyStackFrame = (value, persist) => {
+    const index = Math.min(activeStackRef.current, stacksRef.current.length - 1);
+    const next = stacksRef.current.map((stack, i) =>
+      i === index ? { ...stack, frame: value } : stack
+    );
+    writeStacks(next);
+    if (persist && clip) {
+      const patch = { stacks: next };
+      // The clip's primary framing still follows the top/single stack.
+      if (index === 0) Object.assign(patch, value);
+      onFrame?.(patch);
+    }
+  };
+
   const updateFrame = (patch) => {
     pendingFrameRef.current = { ...(pendingFrameRef.current || frameRef.current), ...patch };
     if (frameRafRef.current) return;
@@ -194,7 +314,7 @@ export default function PhonePreview({
       const next = resolveFrame(pendingFrameRef.current);
       pendingFrameRef.current = null;
       frameRef.current = next;
-      setFrame(next);
+      applyStackFrame(next, false);
     });
   };
 
@@ -205,8 +325,7 @@ export default function PhonePreview({
     frameRafRef.current = 0;
     pendingFrameRef.current = null;
     frameRef.current = value;
-    setFrame(value);
-    if (clip) onFrame?.(value);
+    applyStackFrame(value, true);
   };
 
   const resetFrame = () => {
@@ -215,13 +334,41 @@ export default function PhonePreview({
     frameRafRef.current = 0;
     pendingFrameRef.current = null;
     frameRef.current = next;
-    setFrame(next);
-    commitFrame(next);
+    applyStackFrame(next, true);
   };
 
   const applyPreset = (preset) => {
     if (!clip || previewUrl) return;
     commitFrame(resolveFrame(preset.frame));
+  };
+
+  const updateStackOffset = (index, raw) => {
+    if (!clip) return;
+    const bounds = stackOffsetBounds({
+      start: clip.start,
+      end: clip.end,
+      sourceDuration: project?.duration ?? clip.end,
+    });
+    const offset = Math.round(clamp(Number(raw) || 0, bounds.min, bounds.max) * 100) / 100;
+    const next = stacksRef.current.map((stack, i) => (i === index ? { ...stack, offset } : stack));
+    writeStacks(next);
+    setOffsetDrafts((prev) => ({ ...prev, [index]: undefined }));
+    onFrame?.({ stacks: next });
+    seekAll(playheadRef.current);
+    drawnRef.current.stamp = null;
+    draw();
+  };
+
+  const resetStacks = () => {
+    if (!clip) return;
+    const primary = resolveFrame(clip);
+    const next = stacksRef.current.map(() => ({ frame: { ...primary }, offset: 0 }));
+    writeStacks(next);
+    setOffsetDrafts({});
+    onFrame?.({ stacks: null, ...primary });
+    seekAll(playheadRef.current);
+    drawnRef.current.stamp = null;
+    draw();
   };
 
   // Editing the in/out points drops a different slice of the source into the
@@ -237,7 +384,7 @@ export default function PhonePreview({
     setSectionError(null);
     setSection({ start, end });
     onFrame?.({ start, end });
-    seekVideo(start);
+    seekAll(start);
     emitPlayhead(start);
   };
 
@@ -369,18 +516,18 @@ export default function PhonePreview({
     wheelCommitRef.current = setTimeout(() => commitFrame(), 140);
   };
 
-  /** Paint the live video into the 16:9 window with the same composition the renderer uses. */
+  /** Paint every stack from its own video surface with the shared layout math. */
   const draw = useCallback(() => {
-    const video = videoRef.current;
+    const videos = videoRefs.current.filter(Boolean);
+    const primary = videos[0];
     const canvas = canvasRef.current;
-    if (!video || !canvas || !video.videoWidth) return;
+    if (!primary || !canvas || !primary.videoWidth) return;
     const width = canvas.clientWidth;
     const height = canvas.clientHeight;
     if (!width || !height) return;
 
     const active = layoutRef.current;
-    const { focus, focusY, zoom } = frameRef.current;
-
+    const currentStacks = stacksRef.current;
     const dpr = window.devicePixelRatio || 1;
     const pixelWidth = Math.round(width * dpr);
     const pixelHeight = Math.round(height * dpr);
@@ -389,7 +536,11 @@ export default function PhonePreview({
       canvas.height = pixelHeight;
     }
 
-    const stamp = `${video.currentTime.toFixed(3)}|${active}|${focus}|${focusY}|${zoom}|${pixelWidth}x${pixelHeight}`;
+    const times = videos.map((video) => video.currentTime.toFixed(3)).join(',');
+    const angles = currentStacks
+      .map((stack) => `${stack.frame.focus}|${stack.frame.focusY}|${stack.frame.zoom}|${stack.offset}`)
+      .join('|');
+    const stamp = `${times}|${active}|${angles}|${activeStackRef.current}|${pixelWidth}x${pixelHeight}`;
     if (drawnRef.current.stamp === stamp) return;
     drawnRef.current.stamp = stamp;
     const ctx = canvas.getContext('2d');
@@ -397,125 +548,169 @@ export default function PhonePreview({
     ctx.clearRect(0, 0, width, height);
     ctx.filter = 'none';
 
-    const vw = video.videoWidth;
-    const vh = video.videoHeight;
-    const plan = composeLayout({ layout: active, srcW: vw, srcH: vh, width, height, frame: { focus, focusY, zoom } });
-    // Only cover the composed frame once playback reaches the end card. Drawing
-    // the outro unconditionally would hide the live video behind its backdrop.
-    const outroActive = contentEndRef.current > 0 && video.currentTime >= contentEndRef.current;
+    const plan = composeLayout({
+      layout: active,
+      srcW: primary.videoWidth,
+      srcH: primary.videoHeight,
+      width,
+      height,
+      frame: currentStacks[0]?.frame || {},
+      stacks: currentStacks,
+    });
+    const master = primary.currentTime - primaryOffsetRef.current;
+    const outroActive = contentEndRef.current > 0 && master >= contentEndRef.current;
     const outroProgress = outroActive
-      ? Math.min(1, (video.currentTime - contentEndRef.current) / OUTRO_DURATION)
+      ? Math.min(1, (master - contentEndRef.current) / OUTRO_DURATION)
       : 0;
 
     if (plan.mode === 'fill') {
       const { box } = plan;
-      ctx.drawImage(video, box.x, box.y, box.cropW, box.cropH, 0, 0, width, height);
+      ctx.drawImage(primary, box.x, box.y, box.cropW, box.cropH, 0, 0, width, height);
       if (outroActive) drawOutro(ctx, width, height, outroProgress);
       return;
     }
 
     if (plan.mode === 'blur') {
       const { backdrop, foreground, sigma } = plan;
-      drawBlurBackdrop(ctx, video, backdrop, width, height, sigma);
-      ctx.drawImage(video, 0, 0, vw, vh, foreground.x, foreground.y, foreground.width, foreground.height);
+      drawBlurBackdrop(ctx, primary, backdrop, width, height, sigma);
+      ctx.drawImage(primary, 0, 0, primary.videoWidth, primary.videoHeight, foreground.x, foreground.y, foreground.width, foreground.height);
       if (outroActive) drawOutro(ctx, width, height, outroProgress);
       return;
     }
 
-    const { box, tiles, tileH, offsetY } = plan;
-    for (let index = 0; index < tiles; index += 1) {
+    const { boxes, tiles: count, tileH, offsetY } = plan;
+    for (let index = 0; index < count; index += 1) {
+      const box = boxes[index];
+      const video = videos[groupOfRef.current[index] || 0] || primary;
+      if (!video.videoWidth) continue;
       ctx.drawImage(video, box.x, box.y, box.cropW, box.cropH, 0, index * tileH - offsetY, width, tileH);
     }
+    // Highlight the band being edited so "Top" / "Bottom" controls are obvious.
+    const selected = Math.min(activeStackRef.current, count - 1);
+    ctx.save();
+    ctx.strokeStyle = 'rgba(200, 255, 61, 0.95)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(1, selected * tileH - offsetY + 1, width - 2, tileH - 2);
+    ctx.restore();
     if (outroActive) drawOutro(ctx, width, height, outroProgress);
   }, []);
 
-  // Paint on the frames that actually change instead of running a permanent loop.
+  timeUpdateRef.current = () => {
+    const video = primaryVideo();
+    if (!video || !clip) return;
+    if (previewUrl) {
+      const loopEnd = Math.min(clip.end, clip.start + 6) + OUTRO_DURATION;
+      if (video.currentTime >= loopEnd - 0.03) {
+        video.currentTime = 0.001;
+        emitPlayhead(0.001);
+        return;
+      }
+      emitPlayhead(video.currentTime);
+      return;
+    }
+    const master = video.currentTime - primaryOffsetRef.current;
+    const loopEnd = contentEndRef.current + OUTRO_DURATION;
+    // The like & subscribe end card runs after the content, then playback loops.
+    if (loopEnd > 0 && master >= loopEnd - 0.03) {
+      seekAll(clip.start);
+      emitPlayhead(clip.start);
+      return;
+    }
+    syncStacks(master);
+    emitPlayhead(master);
+  };
+
+  // Paint on presented video frames instead of a permanent 60 fps loop. Canvas
+  // blur/stack work is expensive and used to stall the whole editor.
   useEffect(() => {
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    if (!video || !canvas) return undefined;
-
-    // A remounted canvas (e.g. returning from burn-in preview) starts blank; the
-    // live video also reloads at 0:00, so put it back on the clip start.
-    drawnRef.current.stamp = null;
-    if (!previewUrl && clip && video.readyState >= 1) seekVideo(clip.start);
-
+    painterRef.current.stop();
+    if (!playing || previewUrl) {
+      draw();
+      return undefined;
+    }
+    const videos = allVideos();
     let frame = 0;
-    let videoFrame = null;
-    let running = false;
-    const paint = () => draw();
+    let stopped = false;
+    const callbacks = new Map();
     const loop = () => {
-      paint();
-      if (running) frame = requestAnimationFrame(loop);
+      if (stopped) return;
+      draw();
+      frame = requestAnimationFrame(loop);
     };
-    const start = () => {
-      if (running) return;
-      running = true;
-      // Paint once per presented video frame instead of once per display refresh.
-      // Canvas blur/filter work is expensive and was stalling the UI at 60 fps.
-      if (typeof video.requestVideoFrameCallback === 'function') {
+    const supportsFrames = videos.some((video) => typeof video.requestVideoFrameCallback === 'function');
+    if (supportsFrames) {
+      videos.forEach((video) => {
+        if (typeof video.requestVideoFrameCallback !== 'function') return;
         const onVideoFrame = () => {
-          if (!running) return;
+          if (stopped) return;
           draw();
-          videoFrame = video.requestVideoFrameCallback(onVideoFrame);
+          callbacks.set(video, video.requestVideoFrameCallback(onVideoFrame));
         };
-        videoFrame = video.requestVideoFrameCallback(onVideoFrame);
-      } else {
-        loop();
-      }
-    };
+        callbacks.set(video, video.requestVideoFrameCallback(onVideoFrame));
+      });
+    } else {
+      loop();
+    }
     const stop = () => {
-      running = false;
+      if (stopped) return;
+      stopped = true;
       cancelAnimationFrame(frame);
-      if (videoFrame !== null && typeof video.cancelVideoFrameCallback === 'function') {
-        video.cancelVideoFrameCallback(videoFrame);
-        videoFrame = null;
+      for (const [video, callback] of callbacks) {
+        if (typeof video.cancelVideoFrameCallback === 'function') video.cancelVideoFrameCallback(callback);
       }
-      paint();
+      callbacks.clear();
     };
+    painterRef.current.stop = stop;
+    return stop;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playing, previewUrl, groups.map((group) => group.key).join('|'), draw]);
 
-    video.addEventListener('play', start);
-    video.addEventListener('playing', start);
-    video.addEventListener('pause', stop);
-    video.addEventListener('seeked', paint);
-    video.addEventListener('timeupdate', paint);
-    video.addEventListener('loadeddata', paint);
-    const observer = new ResizeObserver(paint);
-    observer.observe(canvas);
-    paint();
-
-    return () => {
-      running = false;
-      cancelAnimationFrame(frame);
-      if (videoFrame !== null && typeof video.cancelVideoFrameCallback === 'function') {
-        video.cancelVideoFrameCallback(videoFrame);
-      }
-      video.removeEventListener('play', start);
-      video.removeEventListener('playing', start);
-      video.removeEventListener('pause', stop);
-      video.removeEventListener('seeked', paint);
-      video.removeEventListener('timeupdate', paint);
-      video.removeEventListener('loadeddata', paint);
-      observer.disconnect();
-    };
-  }, [draw, previewUrl, clip?.id]);
-
+  // Repaint when the composition itself changes.
   useEffect(() => {
+    drawnRef.current.stamp = null;
     draw();
-  }, [draw, layout, frameValue.focus, frameValue.focusY, frameValue.zoom]);
+  }, [draw, layout, stacks, activeStack, previewUrl]);
 
+  // A canvas resize does not emit a video frame while paused.
   useEffect(() => {
-    setFrame(resolveFrame(clip));
+    const canvas = canvasRef.current;
+    if (!canvas) return undefined;
+    const observer = new ResizeObserver(() => {
+      drawnRef.current.stamp = null;
+      draw();
+    });
+    observer.observe(canvas);
+    return () => observer.disconnect();
+  }, [draw]);
+
+  // Switching clips/layouts rebuilds the stack list from the saved clip data.
+  // Saving a stack edit also changes clip.stacks; that must refresh the values
+  // without throwing the playhead back to the start of the clip.
+  useEffect(() => {
+    const next = resolveStacks({
+      layout,
+      frame: clip || {},
+      stacks: clip?.stacks,
+      start: clip?.start ?? 0,
+      end: clip?.end ?? 0,
+      sourceDuration: project?.duration ?? 0,
+    });
+    writeStacks(next);
+    setOffsetDrafts({});
+    setActiveStack((current) => Math.min(current, next.length - 1));
+    const key = `${clip?.id || ''}|${layout}|${project?.duration || 0}`;
+    if (compositionKeyRef.current === key) return;
+    compositionKeyRef.current = key;
     setPreviewUrl(null);
     setPreviewError(null);
-    const video = videoRef.current;
-    if (video && clip) {
-      seekVideo(clip.start);
+    const video = primaryVideo();
+    if (video && clip && !previewUrl) {
+      seekAll(clip.start);
       setPlaying(false);
       emitPlayhead(clip.start);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clip?.id]);
+  }, [clip?.id, clip?.stacks, layout, project?.duration]);
 
   // Keep the section fields in step with the server's snapped in/out points.
   useEffect(() => {
@@ -530,58 +725,98 @@ export default function PhonePreview({
       return;
     }
     contentEndRef.current = previewUrl ? Math.min(clip.end, clip.start + 6) : clip.end;
-  }, [clip?.id, previewUrl]);
+  }, [clip?.id, clip?.end, previewUrl]);
 
   // Only external playhead changes (a transcript click, choosing a clip) should
   // seek the video. Playhead updates we emitted ourselves must not bounce back as
   // a second seek — that fight is what made editing playback stutter and freeze.
   useEffect(() => {
-    const video = videoRef.current;
-    if (!video || !clip || playing) return;
+    if (!clip || playing || previewUrl) return;
     if (playhead === lastEmittedRef.current) return;
-    if (Math.abs(video.currentTime - playhead) < 0.05) return;
-    seekVideo(playhead);
+    const video = primaryVideo();
+    const master = video ? video.currentTime - primaryOffsetRef.current : 0;
+    if (Math.abs(master - playhead) < 0.05) return;
+    seekAll(playhead);
+    drawnRef.current.stamp = null;
+    draw();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [playhead, playing, clip]);
+  }, [playhead, playing, clip, previewUrl]);
 
-  // A rebuilt browser preview reloads at 0:00; seeking is ignored until metadata
-  // exists, so restore the playhead from the load event instead of a timer.
-  const restoreAfterLoad = () => {
-    const video = videoRef.current;
-    if (!video || previewUrl || !clip) return;
-    const inRange = playheadRef.current >= clip.start - 0.05 && playheadRef.current <= clip.end + OUTRO_DURATION;
-    seekVideo(inRange ? playheadRef.current : clip.start);
+  // A rebuilt video reloads at 0:00; seeking is ignored until metadata exists,
+  // so restore from the load event instead of a timer.
+  const restoreFor = (index) => {
+    if (previewUrl || !clip) return;
+    const group = activeGroups[index];
+    const video = videoRefs.current[index];
+    if (!group || !video) return;
+    const max = Math.max(0.1, (project?.duration || playheadRef.current) - 0.02);
+    const target = clamp(playheadRef.current + group.offset, 0.001, max);
+    if (Math.abs(video.currentTime - target) >= 0.05) video.currentTime = target;
+    drawnRef.current.stamp = null;
     draw();
   };
 
   const toggle = async () => {
-    const video = videoRef.current;
-    if (!video) return;
-    if (video.paused) {
+    const videos = allVideos();
+    if (!videos.length) return;
+    if (videos[0].paused) {
       if (clip && !previewUrl) {
+        const master = videos[0].currentTime - primaryOffsetRef.current;
         const loopEnd = contentEndRef.current + OUTRO_DURATION;
-        if (video.currentTime < clip.start || video.currentTime >= loopEnd - 0.1) seekVideo(clip.start);
+        // Re-align every surface to the playhead before resuming, then let
+        // timeupdate corrections keep them together during playback.
+        seekAll(master < clip.start || master >= loopEnd - 0.1 ? clip.start : master);
       }
-      await video.play().catch(() => {});
+      await Promise.all(videos.map((video) => video.play().catch(() => {})));
       setPlaying(true);
     } else {
-      video.pause();
-      setPlaying(false);
+      pauseAll();
     }
   };
 
-  const onTimeUpdate = () => {
-    const video = videoRef.current;
-    if (!video || !clip) return;
-    const loopEnd = contentEndRef.current + OUTRO_DURATION;
-    // The like & subscribe end card runs after the content, then playback loops.
-    if (loopEnd > 0 && video.currentTime >= loopEnd - 0.03) {
-      const restartAt = previewUrl ? 0 : clip.start;
-      video.currentTime = restartAt > 0 ? restartAt : 0.001;
-      emitPlayhead(restartAt);
-      return;
+  const seekFromTrack = (event) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    if (!rect.width || !clip) return;
+    const ratio = clamp((event.clientX - rect.left) / rect.width, 0, 1);
+    goTo(trackStart + ratio * Math.max(0, trackEnd - trackStart));
+  };
+
+  const beginTrackSeek = (event) => {
+    if (event.button !== 0 || !clip) return;
+    event.preventDefault();
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      /* capture is optional */
     }
-    emitPlayhead(video.currentTime);
+    trackSeekingRef.current = true;
+    seekFromTrack(event);
+  };
+
+  const endTrackSeek = (event) => {
+    trackSeekingRef.current = false;
+    try {
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+    } catch {
+      /* capture is optional */
+    }
+  };
+
+  const handleTrackKeyDown = (event) => {
+    if (!clip) return;
+    const delta = { ArrowLeft: -0.5, ArrowRight: 0.5 }[event.key];
+    if (delta !== undefined) {
+      event.preventDefault();
+      goTo(playhead + delta);
+    } else if (event.key === 'Home') {
+      event.preventDefault();
+      goTo(trackStart);
+    } else if (event.key === 'End') {
+      event.preventDefault();
+      goTo(trackEnd);
+    }
   };
 
   const cue = useMemo(() => {
@@ -598,13 +833,20 @@ export default function PhonePreview({
     return index;
   }, [cue, playhead]);
 
+  const manualCaption =
+    style?.captionX !== null && style?.captionX !== undefined &&
+    style?.captionY !== null && style?.captionY !== undefined &&
+    Number.isFinite(Number(style.captionX)) && Number.isFinite(Number(style.captionY));
+
   const captionStyle = {
     fontFamily: `'${style.font}', system-ui, sans-serif`,
     color: style.color,
     fontSize: `${18 * (style.size || 1)}px`,
     textTransform: style.uppercase ? 'uppercase' : 'none',
     opacity: style.opacity ?? 1,
-    transform: `rotate(${style.tilt || 0}deg)`,
+    transform: manualCaption
+      ? `translate(-50%, -50%) rotate(${style.tilt || 0}deg)`
+      : `rotate(${style.tilt || 0}deg)`,
     WebkitTextStroke: style.outlineWidth ? `${Math.min(2.4, style.outlineWidth * 0.42)}px ${style.outline}` : '0',
     paintOrder: 'stroke fill',
     textShadow: style.shadow
@@ -615,10 +857,56 @@ export default function PhonePreview({
       : 'transparent',
     padding: style.box ? '4px 9px' : '0',
     borderRadius: style.box ? '5px' : '0',
+    ...(manualCaption
+      ? { position: 'absolute', left: `${Number(style.captionX) * 100}%`, top: `${Number(style.captionY) * 100}%` }
+      : {}),
   };
 
   const captionPosition =
     style.position === 'top' ? 'flex-start' : style.position === 'middle' ? 'center' : 'flex-end';
+
+  const beginCaptionDrag = (event) => {
+    if (!manualCaption || !captionMoving || event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      /* capture is optional */
+    }
+    captionDragRef.current = {
+      pointerId: event.pointerId,
+      start: pointerPosition(event),
+      x: Number(style.captionX),
+      y: Number(style.captionY),
+    };
+    setCaptionDragging(true);
+  };
+
+  const moveCaptionDrag = (event) => {
+    const drag = captionDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    const point = pointerPosition(event);
+    onCaption?.({
+      x: clamp(drag.x + point.x - drag.start.x, 0.03, 0.97),
+      y: clamp(drag.y + point.y - drag.start.y, 0.03, 0.97),
+    });
+  };
+
+  const endCaptionDrag = (event) => {
+    const drag = captionDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    captionDragRef.current = null;
+    setCaptionDragging(false);
+    try {
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+    } catch {
+      /* capture is optional */
+    }
+  };
 
   const renderBurnIn = async () => {
     if (!clip) return;
@@ -631,6 +919,7 @@ export default function PhonePreview({
       });
       setPreviewUrl(url);
       setPlaying(false);
+      emitPlayhead(0);
     } catch (error) {
       setPreviewError(error.message);
     } finally {
@@ -639,11 +928,12 @@ export default function PhonePreview({
   };
 
   const cropRect = cropRectFor(frameValue);
+  const tileTop = Math.min(activeStack, tiles - 1) / tiles;
   const cropStyle = {
     left: `${cropRect.left * 100}%`,
-    top: `${cropRect.top * 100}%`,
+    top: `${(tileTop + cropRect.top / tiles) * 100}%`,
     width: `${cropRect.size * 100}%`,
-    height: `${cropRect.size * 100}%`,
+    height: `${(cropRect.size / tiles) * 100}%`,
   };
 
   return (
@@ -680,6 +970,22 @@ export default function PhonePreview({
               </button>
             ))}
           </div>
+          {tiles > 1 && (
+            <div className="stack-switch" role="group" aria-label="Stack being edited">
+              {labels.map((label, index) => (
+                <button
+                  key={label}
+                  type="button"
+                  className={activeStack === index ? 'active' : ''}
+                  onClick={() => setActiveStack(index)}
+                  aria-pressed={activeStack === index}
+                  title={`Edit the ${label.toLowerCase()} stack`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
         <div className="preview-head-right">
           <span className="muted-label">
@@ -693,6 +999,15 @@ export default function PhonePreview({
           >
             {transcribing ? 'Generating…' : clip?.cues?.length ? 'Regenerate transcription' : 'Generate transcription'}
           </button>
+          <button
+            className={`btn ghost small ${captionMoving ? 'is-working' : ''}`}
+            onClick={() => setCaptionMoving((value) => !value)}
+            disabled={!clip || Boolean(previewUrl)}
+            type="button"
+            title="Drag the captions anywhere in the preview"
+          >
+            {captionMoving ? 'Done moving' : 'Move captions'}
+          </button>
           <button className="btn ghost small" onClick={renderBurnIn} disabled={!clip || previewing} type="button">
             {previewing ? 'Rendering…' : 'Burn-in preview'}
           </button>
@@ -702,25 +1017,57 @@ export default function PhonePreview({
       <div className="frame-stage">
         <div className="edit-frame" style={{ '--frame-ratio': aspectInfo.width / aspectInfo.height }}>
           <div className="frame-screen" style={{ aspectRatio: `${aspectInfo.width} / ${aspectInfo.height}` }}>
-            <video
-              ref={videoRef}
-              className="frame-video"
-              src={previewUrl || videoSrc}
-              playsInline
-              preload="auto"
-              muted={muted}
-              onTimeUpdate={onTimeUpdate}
-              onLoadedMetadata={restoreAfterLoad}
-              onEnded={() => setPlaying(false)}
-              onPlay={() => setPlaying(true)}
-              onPause={() => setPlaying(false)}
-              style={{ visibility: previewUrl ? 'visible' : 'hidden' }}
-            />
+            {previewUrl ? (
+              <video
+                ref={(element) => { videoRefs.current[0] = element; }}
+                className="frame-video"
+                src={previewUrl}
+                playsInline
+                preload="auto"
+                muted={muted}
+                onTimeUpdate={() => { timeUpdateRef.current(); draw(); }}
+                onSeeked={() => draw()}
+                onLoadedMetadata={() => restoreFor(0)}
+                onEnded={() => setPlaying(false)}
+                onPlay={() => setPlaying(true)}
+                onPause={() => setPlaying(false)}
+              />
+            ) : (
+              activeGroups.map((group, index) => (
+                <video
+                  key={group.key}
+                  ref={(element) => { videoRefs.current[index] = element; }}
+                  className="frame-video"
+                  src={videoSrc}
+                  playsInline
+                  preload="auto"
+                  muted={muted}
+                  onTimeUpdate={() => { if (index === 0) timeUpdateRef.current(); draw(); }}
+                  onSeeked={() => draw()}
+                  onLoadedMetadata={() => restoreFor(index)}
+                  onEnded={() => index === 0 && setPlaying(false)}
+                  onPlay={() => index === 0 && setPlaying(true)}
+                  onPause={() => index === 0 && setPlaying(false)}
+                  style={{ visibility: 'hidden' }}
+                />
+              ))
+            )}
             {!previewUrl && <canvas ref={canvasRef} className="frame-canvas" />}
             {!previewUrl && (
-              <div className="caption-layer" style={{ justifyContent: captionPosition }}>
+              <div
+                className={`caption-layer ${captionMoving && manualCaption ? 'interactive' : ''}`}
+                style={manualCaption ? undefined : { justifyContent: captionPosition }}
+              >
                 {cue ? (
-                  <div className="caption-text" style={captionStyle} key={cue.start}>
+                  <div
+                    className={`caption-text ${captionMoving && manualCaption ? 'draggable' : ''} ${captionDragging ? 'dragging' : ''}`}
+                    style={captionStyle}
+                    key={cue.start}
+                    onPointerDown={beginCaptionDrag}
+                    onPointerMove={moveCaptionDrag}
+                    onPointerUp={endCaptionDrag}
+                    onPointerCancel={endCaptionDrag}
+                  >
                     {cue.words.map((word, index) => (
                       <span
                         key={`${word.start}-${index}`}
@@ -736,7 +1083,9 @@ export default function PhonePreview({
                       ? 'Preparing a browser preview…'
                       : transcribing
                         ? 'Transcribing…'
-                        : 'Captions appear here'}
+                        : captionMoving
+                          ? 'Drag a caption to place it'
+                          : 'Captions appear here'}
                   </div>
                 )}
               </div>
@@ -750,7 +1099,7 @@ export default function PhonePreview({
                   style={cropStyle}
                   role="group"
                   tabIndex={0}
-                  aria-label="Preset frame. Drag to move the crop, edges for one-axis framing, corners to zoom."
+                  aria-label={`${labels[activeStack] || 'Frame'} crop. Drag to move the crop, edges for one-axis framing, corners to zoom.`}
                   onPointerDown={beginFrameDrag('pan')}
                   onPointerMove={moveFrameDrag}
                   onPointerUp={endFrameDrag}
@@ -786,7 +1135,9 @@ export default function PhonePreview({
                     />
                   ))}
                 </div>
-                <span className="frame-hint">Drag to reframe · edges: one axis · corners: zoom</span>
+                <span className="frame-hint">
+                  {tiles > 1 ? `${labels[activeStack] || 'Stack'} · ` : ''}Drag to reframe · edges: one axis · corners: zoom
+                </span>
               </div>
             )}
           </div>
@@ -807,6 +1158,10 @@ export default function PhonePreview({
             className="link"
             type="button"
             onClick={() => {
+              // Force the composition effect to restore the live source at the
+              // clip's in-point instead of the short preview's relative time.
+              compositionKeyRef.current = '';
+              emitPlayhead(clip?.start ?? 0);
               setPreviewUrl(null);
               setPreviewError(null);
             }}
@@ -817,7 +1172,7 @@ export default function PhonePreview({
       )}
 
       <div className="transport">
-        <button className="btn primary play" onClick={toggle} type="button" disabled={!clip || Boolean(previewUrl)}>
+        <button className="btn primary play" onClick={toggle} type="button" disabled={!clip}>
           {playing ? '❚❚ Pause' : '▶ Play clip'}
         </button>
         <button
@@ -828,23 +1183,57 @@ export default function PhonePreview({
         >
           {muted ? '🔇' : '🔊'}
         </button>
+        <button
+          className="btn ghost icon-only"
+          type="button"
+          onClick={() => goTo(playhead - 1)}
+          disabled={!clip}
+          title="Back one second"
+        >
+          −1s
+        </button>
+        <div
+          className="track"
+          role="slider"
+          tabIndex={0}
+          aria-label="Seek preview"
+          aria-valuemin={trackStart}
+          aria-valuemax={trackEnd}
+          aria-valuenow={playhead}
+          onPointerDown={beginTrackSeek}
+          onPointerMove={(event) => trackSeekingRef.current && seekFromTrack(event)}
+          onPointerUp={endTrackSeek}
+          onPointerCancel={endTrackSeek}
+          onKeyDown={handleTrackKeyDown}
+        >
+          <span
+            style={{
+              width: clip && trackEnd > trackStart
+                ? `${Math.max(0, Math.min(100, ((playhead - trackStart) / (trackEnd - trackStart)) * 100))}%`
+                : '0%',
+            }}
+          />
+        </div>
+        <button
+          className="btn ghost icon-only"
+          type="button"
+          onClick={() => goTo(playhead + 1)}
+          disabled={!clip}
+          title="Forward one second"
+        >
+          +1s
+        </button>
         <div className="clip-progress">
           <span>{formatTime(playhead)}</span>
-          <div className="track">
-            <span
-              style={{
-                width: clip ? `${Math.max(0, Math.min(100, ((playhead - clip.start) / (clip.end - clip.start)) * 100))}%` : '0%',
-              }}
-            />
-          </div>
-          <span>{clip ? formatTime(clip.end) : '0:00'}</span>
+          <span>/</span>
+          <span>{clip ? formatTime(trackEnd) : '0:00'}</span>
         </div>
       </div>
 
       <div className="editor-tools">
         <div className="tool-group frame-tools">
           <div className="tool-heading">
-            <span>Preset frame</span>
+            <span>{tiles > 1 ? `${labels[activeStack] || 'Stack'} angle` : 'Preset frame'}</span>
             <small>Drag the canvas or use exact controls</small>
           </div>
           <div className="angle-presets" role="group" aria-label="Framing angle presets">
@@ -906,7 +1295,7 @@ export default function PhonePreview({
           </div>
           <div className="tool-foot">
             <button className="btn ghost small" type="button" onClick={resetFrame} disabled={!clip}>
-              Reset frame
+              Reset angle
             </button>
             {clip && <span className="muted-label">{clip.score}/100 viral score</span>}
           </div>
@@ -962,6 +1351,65 @@ export default function PhonePreview({
             {sectionError && <span className="tool-error">{sectionError}</span>}
           </div>
         </div>
+
+        {tiles > 1 && (
+          <div className="tool-group stack-tools">
+            <div className="tool-heading">
+              <span>Stack sources</span>
+              <small>Pick a different moment for each half — they play together</small>
+            </div>
+            <div className="stack-rows">
+              {stacks.map((stack, index) => {
+                const sourceAt = Number((clip?.start || 0) + stack.offset);
+                const draft = offsetDrafts[index];
+                return (
+                  <div key={labels[index] || index} className={`stack-row ${activeStack === index ? 'active' : ''}`}>
+                    <button
+                      type="button"
+                      className="stack-pick"
+                      onClick={() => setActiveStack(index)}
+                      aria-pressed={activeStack === index}
+                    >
+                      {labels[index] || `Stack ${index + 1}`}
+                    </button>
+                    <label>
+                      <span>Source at</span>
+                      <input
+                        type="number"
+                        min="0"
+                        max={project?.duration}
+                        step="0.1"
+                        value={draft === undefined ? sourceAt.toFixed(1) : draft}
+                        onChange={(event) => setOffsetDrafts((prev) => ({ ...prev, [index]: event.target.value }))}
+                        onBlur={(event) => updateStackOffset(index, (Number(event.target.value) || sourceAt) - (clip?.start || 0))}
+                        onKeyDown={(event) => event.key === 'Enter' && event.currentTarget.blur()}
+                        disabled={!clip}
+                      />
+                    </label>
+                    <span className="stack-delta">
+                      {stack.offset > 0 ? '+' : ''}{stack.offset.toFixed(1)}s
+                    </span>
+                    <button
+                      className="btn ghost small"
+                      type="button"
+                      onClick={() => updateStackOffset(index, playhead - (clip?.start || 0))}
+                      disabled={!clip}
+                      title="Use the current playhead as this stack's source moment"
+                    >
+                      At playhead
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="tool-foot">
+              <button className="btn ghost small" type="button" onClick={resetStacks} disabled={!clip}>
+                Reset all stack moments
+              </button>
+              <span className="muted-label">Each stack keeps its own angle and source moment</span>
+            </div>
+          </div>
+        )}
       </div>
     </section>
   );

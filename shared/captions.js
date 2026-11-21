@@ -210,7 +210,7 @@ export function getStyle(id) {
 export function resolveStyle(id, options = {}) {
   const base = getStyle(id);
   const out = { ...base };
-  for (const key of ['font', 'color', 'accent', 'outline', 'uppercase', 'tilt', 'highlight']) {
+  for (const key of ['font', 'color', 'accent', 'outline', 'uppercase', 'tilt', 'highlight', 'position', 'captionX', 'captionY']) {
     if (options[key] !== null && options[key] !== undefined && options[key] !== '') out[key] = options[key];
   }
   if (options.opacity !== undefined && options.opacity !== null) out.opacity = Number(options.opacity);
@@ -302,8 +302,14 @@ export function buildAss({ width, height, cues, style, offset = 0 }) {
   const fontSize = Math.round(width * 0.068 * sizeScale);
   const outline = Number(st.outlineWidth || 0) * (width / 1080);
   const shadow = Number(st.shadow || 0) * (width / 1080);
-  const marginV = Math.round(height * (st.position === 'top' ? 0.14 : st.position === 'middle' ? 0.42 : 0.16));
-  const alignment = st.position === 'top' ? 8 : st.position === 'middle' ? 5 : 2;
+  // A manually dragged caption is anchored by its centre at captionX/captionY
+  // (fractions of the frame). The live preview uses the same centre anchor, so
+  // the burned-in export lands exactly where the user dropped it.
+  const manualX = st.captionX === null || st.captionX === undefined ? NaN : Number(st.captionX);
+  const manualY = st.captionY === null || st.captionY === undefined ? NaN : Number(st.captionY);
+  const manual = Number.isFinite(manualX) && Number.isFinite(manualY);
+  const marginV = manual ? 0 : Math.round(height * (st.position === 'top' ? 0.14 : st.position === 'middle' ? 0.42 : 0.16));
+  const alignment = manual ? 5 : st.position === 'top' ? 8 : st.position === 'middle' ? 5 : 2;
   const textColor = hexToAss(st.color, 1 - Number(st.opacity ?? 1));
   const accentColor = hexToAss(st.accent, 1 - Number(st.opacity ?? 1));
   const outlineColor = hexToAss(st.outline, Number(st.opacity ?? 1) < 0.9 ? 0.35 : 0);
@@ -334,6 +340,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
   const events = [];
   const rot = tilt ? `\\frz${tilt}` : '';
+  const anchor = manual
+    ? `\\pos(${Math.round(manualX * width)},${Math.round(manualY * height)})\\an5`
+    : '';
   const anim =
     st.animate === 'pop' ? '\\fscx86\\fscy86\\t(0,130,\\fscx100\\fscy100)' : st.animate === 'fade' ? '\\fad(160,120)' : '';
 
@@ -361,12 +370,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         );
         const intro = idx === 0 ? anim : '';
         events.push(
-          `Dialogue: 0,${assTime(wStart)},${assTime(Math.max(wEnd, wStart + 0.05))},Cap,,0,0,0,,{${rot}${intro}}${bodyLines.join('\\N')}`
+          `Dialogue: 0,${assTime(wStart)},${assTime(Math.max(wEnd, wStart + 0.05))},Cap,,0,0,0,,{${anchor}${rot}${intro}}${bodyLines.join('\\N')}`
         );
       });
     } else {
       events.push(
-        `Dialogue: 0,${assTime(Math.max(start, 0))},${assTime(Math.max(end, start + 0.1))},Cap,,0,0,0,,{${rot}${anim}}${plain}`
+        `Dialogue: 0,${assTime(Math.max(start, 0))},${assTime(Math.max(end, start + 0.1))},Cap,,0,0,0,,{${anchor}${rot}${anim}}${plain}`
       );
     }
   }

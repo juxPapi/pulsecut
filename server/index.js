@@ -20,6 +20,7 @@ import {
   MODEL_DIR,
 } from './store.js';
 import { resolveStyle, resolveLayout, ASPECTS, toCues, LANGUAGES, CAPTION_STYLES } from '../shared/captions.js';
+import { resolveStacks } from '../shared/framing.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.PORT) > 0 ? Number(process.env.PORT) : 8790;
@@ -247,8 +248,22 @@ app.delete('/api/projects/:id', requireProject(async (req, res) => {
 // reopening a video or reloading the page does not reset them to the defaults.
 app.patch('/api/projects/:id', requireProject(async (req, res) => {
   const { project } = req;
-  const { layout } = req.body || {};
+  const { layout, caption } = req.body || {};
   if (layout !== undefined) project.layout = resolveLayout(layout);
+  if (caption === null) {
+    delete project.caption;
+  } else if (caption && typeof caption === 'object') {
+    const x = Number(caption.x);
+    const y = Number(caption.y);
+    if (Number.isFinite(x) && Number.isFinite(y)) {
+      project.caption = {
+        x: Math.min(1, Math.max(0, x)),
+        y: Math.min(1, Math.max(0, y)),
+      };
+    } else {
+      delete project.caption;
+    }
+  }
   await saveProject(project);
   broadcast('project', projectSummary(project));
   res.json({ project });
@@ -384,12 +399,27 @@ app.patch('/api/projects/:id/clips/:clipId', requireProject(async (req, res) => 
   const clip = (project.clips || []).find((item) => item.id === req.params.clipId);
   if (!clip) return res.status(404).json({ error: 'Clip not found' });
 
-  const { title, hashtags, focus, focusY, zoom, start, end } = req.body || {};
+  const { title, hashtags, focus, focusY, zoom, stacks, start, end } = req.body || {};
   if (typeof title === 'string') clip.title = title.slice(0, 120);
   if (Array.isArray(hashtags)) clip.hashtags = hashtags.map(String).slice(0, 12);
   if (typeof focus === 'number') clip.focus = Math.min(1, Math.max(0, focus));
   if (typeof focusY === 'number') clip.focusY = Math.min(1, Math.max(0, focusY));
   if (typeof zoom === 'number') clip.zoom = Math.min(2, Math.max(1, zoom));
+
+  // Per-stack angles and source offsets are clamped against the real source
+  // duration so a stack can never ask FFmpeg to decode past the end of a file.
+  if (stacks === null) {
+    delete clip.stacks;
+  } else if (Array.isArray(stacks)) {
+    clip.stacks = resolveStacks({
+      layout: resolveLayout(project.layout),
+      frame: { focus: clip.focus, focusY: clip.focusY, zoom: clip.zoom },
+      stacks,
+      start: clip.start,
+      end: clip.end,
+      sourceDuration: project.duration,
+    });
+  }
 
   if (typeof start === 'number' || typeof end === 'number') {
     const nextStart = Math.max(0, Number(start ?? clip.start));
@@ -465,6 +495,8 @@ async function runRenderJob(job) {
       focus: clip.focus ?? 0.5,
       focusY: clip.focusY ?? 0.5,
       zoom: clip.zoom ?? 1,
+      stacks: clip.stacks,
+      sourceDuration: project.duration,
       cues: clipCues(clip),
       style,
       layout: resolveLayout(job.layout),
@@ -601,7 +633,7 @@ app.post('/api/projects/:id/clips/:clipId/preview', requireProject(async (req, r
   const aspect = ASPECTS[req.body?.aspect] || ASPECTS['9:16'];
   const style = resolveStyle(req.body?.styleId, req.body?.options || {});
   const layout = resolveLayout(req.body?.layout);
-  const key = JSON.stringify({ p: project.id, c: clip.id, a: aspect.id, s: style, l: layout, f: clip.focus, fy: clip.focusY, z: clip.zoom, st: clip.start, en: clip.end, cues: clipCues(clip) });
+  const key = JSON.stringify({ p: project.id, c: clip.id, a: aspect.id, s: style, l: layout, f: clip.focus, fy: clip.focusY, z: clip.zoom, stacks: clip.stacks, st: clip.start, en: clip.end, cues: clipCues(clip) });
   const hash = crypto.createHash('sha1').update(key).digest('hex').slice(0, 10);
   const file = `${project.id}-${clip.id}-${aspect.id.replace(':', 'x')}-${hash}.mp4`;
   const output = path.join(previewDir, file);
@@ -628,6 +660,8 @@ app.post('/api/projects/:id/clips/:clipId/preview', requireProject(async (req, r
             focus: clip.focus ?? 0.5,
             focusY: clip.focusY ?? 0.5,
             zoom: clip.zoom ?? 1,
+            stacks: clip.stacks,
+            sourceDuration: project.duration,
             cues: clipCues(clip),
             style,
             layout,

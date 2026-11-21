@@ -4,7 +4,7 @@ import { existsSync, openSync, readSync, closeSync, fstatSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { buildAss } from '../shared/captions.js';
-import { composeLayout } from '../shared/framing.js';
+import { composeLayout, resolveStacks } from '../shared/framing.js';
 import { OUTRO_DURATION, OUTRO_BACKGROUND, OUTRO_LIME, OUTRO_INK, OUTRO_TEXT, OUTRO_GEOMETRY } from '../shared/outro.js';
 
 const nodeRequire = createRequire(import.meta.url);
@@ -203,8 +203,8 @@ export async function extractAudio(input, output, duration, onProgress) {
 }
 
 /** Compose the source into the output frame for one of the studio layouts. */
-function layoutGraph({ layout, width, height, srcW, srcH, frame }) {
-  const plan = composeLayout({ layout, srcW, srcH, width, height, frame });
+function layoutGraph({ layout, width, height, srcW, srcH, frame, stacks, tileInputs = [0] }) {
+  const plan = composeLayout({ layout, srcW, srcH, width, height, frame, stacks });
   const crop = (box) => `crop=${box.cropW}:${box.cropH}:${box.x}:${box.y}`;
 
   if (plan.mode === 'blur') {
@@ -218,11 +218,28 @@ function layoutGraph({ layout, width, height, srcW, srcH, frame }) {
   }
 
   if (plan.mode === 'tiles') {
-    const { tiles, tileH, box } = plan;
+    const { tiles, tileH, boxes } = plan;
     const labels = (prefix) => Array.from({ length: tiles }, (_, index) => `[${prefix}${index}]`).join('');
-    const parts = [`[0:v]split=${tiles}${labels('p')}`];
+    // Stacks with the same offset share one input; a single split is cheaper
+    // than decoding the same part of the source file three times.
+    const splitOf = new Map();
+    const parts = [];
     for (let i = 0; i < tiles; i += 1) {
-      parts.push(`[p${i}]${crop(box)},scale=${width}:${tileH}:flags=lanczos[t${i}]`);
+      const input = tileInputs[i] || 0;
+      const count = (splitOf.get(input) || 0) + 1;
+      splitOf.set(input, count);
+    }
+    for (const [input, count] of splitOf) {
+      if (count === 1) continue;
+      parts.push(`[${input}:v]split=${count}${Array.from({ length: count }, (_, i) => `[s${input}_${i}]`).join('')}`);
+    }
+    const used = new Map();
+    for (let i = 0; i < tiles; i += 1) {
+      const input = tileInputs[i] || 0;
+      const usedCount = used.get(input) || 0;
+      used.set(input, usedCount + 1);
+      const source = splitOf.get(input) > 1 ? `[s${input}_${usedCount}]` : `[${input}:v]`;
+      parts.push(`${source}${crop(boxes[i])},scale=${width}:${tileH}:flags=lanczos[t${i}]`);
     }
     parts.push(`${labels('t')}vstack=inputs=${tiles}[stacked]`);
     // Trim the rounding overshoot from the stack instead of rescaling it, so tiles stay unstretched.
@@ -232,6 +249,8 @@ function layoutGraph({ layout, width, height, srcW, srcH, frame }) {
 
   return `[0:v]${crop(plan.box)},scale=${width}:${height}:flags=lanczos[composed]`;
 }
+
+const clampSeek = (value, min, max) => Math.min(max, Math.max(min, value));
 
 // The end card used to hard-code C:\Windows\Fonts\arialbd.ttf, which made every
 // render fail on machines without that exact font. Resolve a few known locations
@@ -346,6 +365,8 @@ export async function renderClip({
   focus = 0.5,
   focusY = 0.5,
   zoom = 1,
+  stacks = null,
+  sourceDuration = 0,
   cues,
   style,
   layout = 'fill',
@@ -363,12 +384,45 @@ export async function renderClip({
   const w = Math.round(width);
   const h = Math.round(height);
 
+  const resolved = resolveStacks({
+    layout,
+    frame: { focus, focusY, zoom },
+    stacks,
+    start,
+    end,
+    sourceDuration: sourceDuration || end,
+  });
+  const offsets = layout === 'split' || layout === 'triple'
+    ? resolved.map((stack) => stack.offset)
+    : [0];
+  // Equal offsets share one decoded input. The default stacks all sit at the
+  // same moment, so the common case still decodes the source only once.
+  const uniqueOffsets = [];
+  const tileInputs = offsets.map((offset) => {
+    let index = uniqueOffsets.findIndex((item) => Math.abs(item - offset) < 0.005);
+    if (index < 0) {
+      index = uniqueOffsets.length;
+      uniqueOffsets.push(offset);
+    }
+    return index;
+  });
+  const maxSeek = Math.max(0, (sourceDuration || end) - duration);
+
   const parts = [
-    layoutGraph({ layout, width: w, height: h, srcW, srcH, frame: { focus, focusY, zoom } }),
+    layoutGraph({
+      layout, width: w, height: h, srcW, srcH,
+      frame: { focus, focusY, zoom }, stacks: resolved, tileInputs,
+    }),
     '[composed]setsar=1,fps=30,format=yuv420p,ass=captions.ass[vclip]',
   ];
+  const inputs = uniqueOffsets.flatMap((offset) => [
+    '-ss', String(clampSeek(start + offset, 0, maxSeek)),
+    '-t', String(duration),
+    '-i', input,
+  ]);
+  const outroIndex = uniqueOffsets.length;
   if (appendOutro) {
-    parts.push(`[1:v]${outroGraph({ width: w, height: h, fontName })},setsar=1,fps=30,format=yuv420p[voutro]`);
+    parts.push(`[${outroIndex}:v]${outroGraph({ width: w, height: h, fontName })},setsar=1,fps=30,format=yuv420p[voutro]`);
     parts.push('[vclip][voutro]concat=n=2:v=1:a=0[outv]');
   } else {
     parts.push('[vclip]null[outv]');
@@ -376,9 +430,7 @@ export async function renderClip({
 
   const args = [
     '-hide_banner', '-y',
-    '-ss', String(start),
-    '-t', String(duration),
-    '-i', input,
+    ...inputs,
     ...(appendOutro ? ['-f', 'lavfi', '-i', `color=c=${OUTRO_BACKGROUND}:s=${w}x${h}:d=${OUTRO_DURATION}:r=30`] : []),
     '-filter_complex', parts.join(';'),
     '-map', '[outv]',
