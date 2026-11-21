@@ -367,6 +367,7 @@ export async function renderClip({
   zoom = 1,
   stacks = null,
   sourceDuration = 0,
+  renderDuration = null,
   cues,
   style,
   layout = 'fill',
@@ -379,7 +380,9 @@ export async function renderClip({
   await fs.writeFile(path.join(dir, 'captions.ass'), buildAss({ width, height, cues, style, offset: start }), 'utf8');
   const fontName = appendOutro ? await outroFont(dir) : null;
 
-  const duration = Math.max(0.4, end - start);
+  // `end` is the clip's real out point (used for stack bounds); a burn-in
+  // preview can render only a short prefix via `renderDuration`.
+  const duration = Math.max(0.4, Number(renderDuration ?? (end - start)));
   const total = duration + (appendOutro ? OUTRO_DURATION : 0);
   const w = Math.round(width);
   const h = Math.round(height);
@@ -420,7 +423,13 @@ export async function renderClip({
     '-t', String(duration),
     '-i', input,
   ]);
-  const outroIndex = uniqueOffsets.length;
+  // Audio always comes from the clip's real in point, never from a shifted
+  // stack, so captions and sound stay aligned even when a stack is moved.
+  const audioIndex = hasAudio ? uniqueOffsets.length : -1;
+  if (hasAudio) {
+    inputs.push('-ss', String(clampSeek(start, 0, maxSeek)), '-t', String(duration), '-i', input);
+  }
+  const outroIndex = uniqueOffsets.length + (hasAudio ? 1 : 0);
   if (appendOutro) {
     parts.push(`[${outroIndex}:v]${outroGraph({ width: w, height: h, fontName })},setsar=1,fps=30,format=yuv420p[voutro]`);
     parts.push('[vclip][voutro]concat=n=2:v=1:a=0[outv]');
@@ -434,7 +443,7 @@ export async function renderClip({
     ...(appendOutro ? ['-f', 'lavfi', '-i', `color=c=${OUTRO_BACKGROUND}:s=${w}x${h}:d=${OUTRO_DURATION}:r=30`] : []),
     '-filter_complex', parts.join(';'),
     '-map', '[outv]',
-    ...(hasAudio ? ['-map', '0:a?', '-c:a', 'aac', '-b:a', '160k'] : ['-an']),
+    ...(hasAudio ? ['-map', `${audioIndex}:a?`, '-c:a', 'aac', '-b:a', '160k'] : ['-an']),
     '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '21', '-pix_fmt', 'yuv420p',
     '-movflags', '+faststart',
     '-progress', 'pipe:1', '-nostats',

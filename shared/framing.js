@@ -29,10 +29,14 @@ function clamp(value, min, max, fallback) {
 
 /** Legal offset range that keeps a whole stack inside the source video. */
 export function stackOffsetBounds({ start = 0, end = start, sourceDuration = 0 }) {
-  const length = Math.max(0, Number(end) - Number(start));
+  const s = Math.max(0, Number(start) || 0);
+  const e = Math.max(s, Number(end) || s);
+  const length = e - s;
   return {
-    min: -Math.max(0, Number(start) || 0),
-    max: Math.max(0, (Number(sourceDuration) || 0) - length),
+    min: -s,
+    // A stack plays [start + offset, start + offset + length], so the largest
+    // legal offset still has to end before the source file does.
+    max: Math.max(-s, (Number(sourceDuration) || 0) - length - s),
   };
 }
 

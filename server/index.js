@@ -26,6 +26,33 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.PORT) > 0 ? Number(process.env.PORT) : 8790;
 
 const app = express();
+app.disable('x-powered-by');
+
+// PulseCut is a local-only tool. Reject Host header rebinding and cross-origin
+// mutations so a malicious web page cannot use the browser as a proxy into the
+// localhost API. Node scripts (no Origin header) and the Vite dev proxy remain
+// allowed.
+const allowedHosts = new Set([
+  `127.0.0.1:${PORT}`,
+  `localhost:${PORT}`,
+  '127.0.0.1:5190',
+  'localhost:5190',
+]);
+const allowedOrigins = new Set([
+  `http://127.0.0.1:${PORT}`,
+  `http://localhost:${PORT}`,
+  'http://127.0.0.1:5190',
+  'http://localhost:5190',
+]);
+app.use((req, res, next) => {
+  const host = String(req.headers.host || '').toLowerCase();
+  if (!allowedHosts.has(host)) return res.status(403).json({ error: 'Forbidden host' });
+  const origin = req.headers.origin;
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && origin && !allowedOrigins.has(String(origin).toLowerCase())) {
+    return res.status(403).json({ error: 'Forbidden origin' });
+  }
+  next();
+});
 app.use(express.json({ limit: '4mb' }));
 
 // ------------------------------------------------------------------ SSE bus
@@ -379,6 +406,7 @@ app.post('/api/projects/:id/transcribe', requireProject(async (req, res) => {
 app.post('/api/projects/:id/transcript', requireProject(async (req, res) => {
   const text = String(req.body?.text || '').trim();
   if (!text) return res.status(400).json({ error: 'Paste a transcript first.' });
+  if (text.length > 200_000) return res.status(413).json({ error: 'Transcript is too large (200,000 characters max).' });
   const project = req.project;
   const words = wordsFromText(text, project.duration);
   const language = project.languageCode || 'auto';
@@ -406,21 +434,6 @@ app.patch('/api/projects/:id/clips/:clipId', requireProject(async (req, res) => 
   if (typeof focusY === 'number') clip.focusY = Math.min(1, Math.max(0, focusY));
   if (typeof zoom === 'number') clip.zoom = Math.min(2, Math.max(1, zoom));
 
-  // Per-stack angles and source offsets are clamped against the real source
-  // duration so a stack can never ask FFmpeg to decode past the end of a file.
-  if (stacks === null) {
-    delete clip.stacks;
-  } else if (Array.isArray(stacks)) {
-    clip.stacks = resolveStacks({
-      layout: resolveLayout(project.layout),
-      frame: { focus: clip.focus, focusY: clip.focusY, zoom: clip.zoom },
-      stacks,
-      start: clip.start,
-      end: clip.end,
-      sourceDuration: project.duration,
-    });
-  }
-
   if (typeof start === 'number' || typeof end === 'number') {
     const nextStart = Math.max(0, Number(start ?? clip.start));
     const nextEnd = Math.min(project.duration, Number(end ?? clip.end));
@@ -442,6 +455,22 @@ app.patch('/api/projects/:id/clips/:clipId', requireProject(async (req, res) => 
       wordsPerSecond: rescored.wordsPerSecond,
     });
     clip.cues = toCues(clip.words);
+  }
+
+  // Per-stack angles and source offsets are clamped against the final in/out
+  // points and the real source duration so a stack can never ask FFmpeg to
+  // decode past the end of a file — including after a section edit.
+  if (stacks === null) {
+    delete clip.stacks;
+  } else if (Array.isArray(stacks) || typeof start === 'number' || typeof end === 'number') {
+    clip.stacks = resolveStacks({
+      layout: resolveLayout(project.layout),
+      frame: { focus: clip.focus, focusY: clip.focusY, zoom: clip.zoom },
+      stacks: Array.isArray(stacks) ? stacks : clip.stacks,
+      start: clip.start,
+      end: clip.end,
+      sourceDuration: project.duration,
+    });
   }
 
   await saveProject(project);
@@ -541,19 +570,37 @@ async function runRenderJob(job) {
     job.message = 'Render failed';
   } finally {
     await fsp.rm(workDir, { recursive: true, force: true }).catch(() => {});
+    job.finishedAt = Date.now();
     broadcast('job', job);
+  }
+}
+
+const MAX_RENDER_JOBS = 200;
+const JOB_TTL_MS = 10 * 60 * 1000;
+function pruneJobs() {
+  for (const [id, job] of jobs) {
+    if (job.finishedAt && Date.now() - job.finishedAt > JOB_TTL_MS) jobs.delete(id);
   }
 }
 
 app.post('/api/projects/:id/render', requireProject(async (req, res) => {
   const project = req.project;
   if (!project.clips?.length) return res.status(400).json({ error: 'Transcribe the video first.' });
-  const clipIds = Array.isArray(req.body?.clipIds) && req.body.clipIds.length
-    ? req.body.clipIds
+  pruneJobs();
+  const requestedClipIds = Array.isArray(req.body?.clipIds) && req.body.clipIds.length
+    ? req.body.clipIds.map(String)
     : project.clips.map((clip) => clip.id);
-  const aspects = (Array.isArray(req.body?.aspects) && req.body.aspects.length ? req.body.aspects : ['9:16']).filter(
-    (aspect) => ASPECTS[aspect]
-  );
+  const clipIds = [...new Set(requestedClipIds)]
+    .filter((id) => project.clips.some((clip) => clip.id === id))
+    .slice(0, 50);
+  if (!clipIds.length) return res.status(400).json({ error: 'No valid clips selected.' });
+  const aspects = [...new Set(
+    Array.isArray(req.body?.aspects) && req.body.aspects.length ? req.body.aspects.map(String) : ['9:16']
+  )].filter((aspect) => ASPECTS[aspect]).slice(0, 4);
+  if (!aspects.length) return res.status(400).json({ error: 'No valid aspect ratio selected.' });
+  if (jobs.size + clipIds.length * aspects.length > MAX_RENDER_JOBS) {
+    return res.status(429).json({ error: 'Too many render jobs are already queued.' });
+  }
   const styleId = req.body?.styleId;
   const options = req.body?.options || {};
   const layout = resolveLayout(req.body?.layout);
@@ -652,7 +699,8 @@ app.post('/api/projects/:id/clips/:clipId/preview', requireProject(async (req, r
             input: project.filePath,
             output: scratchOutput,
             start: clip.start,
-            end: Math.min(clip.end, clip.start + 6),
+            end: clip.end,
+            renderDuration: Math.min(6, Math.max(0.4, clip.end - clip.start)),
             width: Math.round((aspect.width * 0.5) / 2) * 2,
             height: Math.round((aspect.height * 0.5) / 2) * 2,
             srcW: project.width,
@@ -692,10 +740,13 @@ app.post('/api/projects/:id/clips/:clipId/preview', requireProject(async (req, r
   }
 }));
 
-app.get('/api/previews/:file', (req, res) => {
+app.get('/api/previews/:file', async (req, res) => {
   const file = path.basename(req.params.file);
+  const target = path.join(previewDir, file);
+  const stat = await fsp.stat(target).catch(() => null);
+  if (!stat?.isFile()) return res.status(404).json({ error: 'Preview not found' });
   res.set('Cache-Control', 'public, max-age=31536000, immutable');
-  return res.sendFile(path.join(previewDir, file));
+  return res.sendFile(target);
 });
 
 // ------------------------------------------------------------------ static

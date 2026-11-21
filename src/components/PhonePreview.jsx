@@ -343,7 +343,7 @@ export default function PhonePreview({
   };
 
   const updateStackOffset = (index, raw) => {
-    if (!clip) return;
+    if (!clip || previewUrl) return;
     const bounds = stackOffsetBounds({
       start: clip.start,
       end: clip.end,
@@ -360,7 +360,7 @@ export default function PhonePreview({
   };
 
   const resetStacks = () => {
-    if (!clip) return;
+    if (!clip || previewUrl) return;
     const primary = resolveFrame(clip);
     const next = stacksRef.current.map(() => ({ frame: { ...primary }, offset: 0 }));
     writeStacks(next);
@@ -1041,7 +1041,9 @@ export default function PhonePreview({
                   src={videoSrc}
                   playsInline
                   preload="auto"
-                  muted={muted}
+                  // Only the primary surface carries sound; extra stacks are
+                  // alternate angles of the same audio, not separate tracks.
+                  muted={muted || index > 0}
                   onTimeUpdate={() => { if (index === 0) timeUpdateRef.current(); draw(); }}
                   onSeeked={() => draw()}
                   onLoadedMetadata={() => restoreFor(index)}
@@ -1383,7 +1385,7 @@ export default function PhonePreview({
                         onChange={(event) => setOffsetDrafts((prev) => ({ ...prev, [index]: event.target.value }))}
                         onBlur={(event) => updateStackOffset(index, (Number(event.target.value) || sourceAt) - (clip?.start || 0))}
                         onKeyDown={(event) => event.key === 'Enter' && event.currentTarget.blur()}
-                        disabled={!clip}
+                        disabled={!clip || Boolean(previewUrl)}
                       />
                     </label>
                     <span className="stack-delta">
@@ -1393,7 +1395,7 @@ export default function PhonePreview({
                       className="btn ghost small"
                       type="button"
                       onClick={() => updateStackOffset(index, playhead - (clip?.start || 0))}
-                      disabled={!clip}
+                      disabled={!clip || Boolean(previewUrl)}
                       title="Use the current playhead as this stack's source moment"
                     >
                       At playhead
@@ -1403,7 +1405,7 @@ export default function PhonePreview({
               })}
             </div>
             <div className="tool-foot">
-              <button className="btn ghost small" type="button" onClick={resetStacks} disabled={!clip}>
+              <button className="btn ghost small" type="button" onClick={resetStacks} disabled={!clip || Boolean(previewUrl)}>
                 Reset all stack moments
               </button>
               <span className="muted-label">Each stack keeps its own angle and source moment</span>

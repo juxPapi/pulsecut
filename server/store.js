@@ -16,11 +16,19 @@ for (const dir of [UPLOAD_DIR, EXPORT_DIR, PROJECT_DIR, TMP_DIR, MODEL_DIR]) {
 
 const cache = new Map();
 
+// Project ids are generated with crypto.randomUUID(). Enforcing that shape at
+// the storage boundary stops route parameters like `../../package` from being
+// turned into a filesystem path outside data/projects.
+const PROJECT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const validId = (id) => PROJECT_ID.test(String(id));
+
 function filePath(id) {
+  if (!validId(id)) throw new Error('Invalid project id');
   return path.join(PROJECT_DIR, `${id}.json`);
 }
 
 export async function getProject(id) {
+  if (!validId(id)) return null;
   if (cache.has(id)) return cache.get(id);
   try {
     const raw = await fs.readFile(filePath(id), 'utf8');
@@ -33,6 +41,7 @@ export async function getProject(id) {
 }
 
 export async function saveProject(project) {
+  if (!validId(project?.id)) throw new Error('Invalid project id');
   project.updatedAt = new Date().toISOString();
   cache.set(project.id, project);
   await fs.writeFile(filePath(project.id), JSON.stringify(project, null, 2), 'utf8');
@@ -46,6 +55,7 @@ export async function listProjects() {
     if (!file.endsWith('.json')) continue;
     try {
       const project = JSON.parse(await fs.readFile(path.join(PROJECT_DIR, file), 'utf8'));
+      if (!validId(project.id)) continue;
       projects.push({
         id: project.id,
         name: project.name,
@@ -67,6 +77,7 @@ export async function listProjects() {
 }
 
 export async function deleteProject(id) {
+  if (!validId(id)) return null;
   const project = await getProject(id);
   cache.delete(id);
   await fs.rm(filePath(id), { force: true });

@@ -105,21 +105,27 @@ export default function App() {
   const optionsRef = useRef(options);
   optionsRef.current = options;
   const lastCaptionRef = useRef(null);
+  const captionDirtyRef = useRef(false);
 
-  const loadProject = useCallback(async (id) => {
+  const loadProject = useCallback(async (id, syncCaption = true) => {
     const data = await api(`/api/projects/${id}`);
     setProject(data.project);
     setLayout(resolveLayout(data.project.layout));
-    const saved = data.project.caption;
-    setOptions((prev) => ({
-      ...prev,
-      captionX: saved ? saved.x : null,
-      captionY: saved ? saved.y : null,
-    }));
-    lastCaptionRef.current = {
-      id,
-      key: saved ? `${saved.x}|${saved.y}` : 'none',
-    };
+    // Server broadcasts can arrive while a caption drag is being saved. Treat
+    // the saved position as a baseline only for explicit loads, otherwise the
+    // broadcast would pull the caption back to the previous value mid-drag.
+    if (syncCaption && !captionDirtyRef.current) {
+      const saved = data.project.caption;
+      setOptions((prev) => ({
+        ...prev,
+        captionX: saved ? saved.x : null,
+        captionY: saved ? saved.y : null,
+      }));
+      lastCaptionRef.current = {
+        id,
+        key: saved ? `${saved.x}|${saved.y}` : 'none',
+      };
+    }
     setActiveClipId((current) => {
       const clips = data.project.clips || [];
       if (current && clips.some((clip) => clip.id === current)) return current;
@@ -155,11 +161,26 @@ export default function App() {
     const placed = Number.isFinite(options.captionX) && Number.isFinite(options.captionY);
     const value = placed ? { x: options.captionX, y: options.captionY } : null;
     const key = placed ? `${options.captionX}|${options.captionY}` : 'none';
-    if (lastCaptionRef.current?.id === id && lastCaptionRef.current?.key === key) return undefined;
+    if (lastCaptionRef.current?.id === id && lastCaptionRef.current?.key === key) {
+      captionDirtyRef.current = false;
+      return undefined;
+    }
     const timer = setTimeout(() => {
       api(`/api/projects/${id}`, {
         method: 'PATCH',
         body: JSON.stringify({ caption: value }),
+      }).then(() => {
+        const currentOptions = optionsRef.current;
+        const currentKey = Number.isFinite(currentOptions.captionX) && Number.isFinite(currentOptions.captionY)
+          ? `${currentOptions.captionX}|${currentOptions.captionY}`
+          : 'none';
+        // Only mark the write clean if no newer position was dragged while it
+        // was in flight; otherwise the newer position schedules its own save.
+        if (projectRef.current?.id === id && currentKey === key) {
+          lastCaptionRef.current = { id, key };
+          captionDirtyRef.current = false;
+          setProject((prev) => (prev?.id === id ? { ...prev, caption: value } : prev));
+        }
       }).catch((err) => setError(err.message));
     }, 250);
     return () => clearTimeout(timer);
@@ -177,7 +198,7 @@ export default function App() {
       return;
     }
     if (event === 'project') {
-      loadProject(current.id).catch(() => {});
+      loadProject(current.id, false).catch(() => {});
       if (data.status === 'ready') setProgress({ phase: 'Ready', percent: 100 });
       return;
     }
@@ -186,7 +207,7 @@ export default function App() {
         const next = prev.filter((job) => job.id !== data.id);
         return [data, ...next];
       });
-      if (data.status === 'done') loadProject(current.id).catch(() => {});
+      if (data.status === 'done') loadProject(current.id, false).catch(() => {});
     }
   });
 
@@ -210,6 +231,7 @@ export default function App() {
   }, []);
 
   const setCaption = useCallback((position) => {
+    captionDirtyRef.current = true;
     setOptions((prev) => ({
       ...prev,
       captionX: position ? position.x : null,
@@ -238,6 +260,8 @@ export default function App() {
   const openProject = useCallback(
     async (id) => {
       try {
+        captionDirtyRef.current = false;
+        lastCaptionRef.current = null;
         await loadProject(id);
         setStage('edit');
         setTab('style');
@@ -264,6 +288,8 @@ export default function App() {
         const { project: created } = await api('/api/upload', { method: 'POST', body: form });
         setProject(created);
         setLayout(resolveLayout(created.layout));
+        captionDirtyRef.current = false;
+        lastCaptionRef.current = { id: created.id, key: 'none' };
         setOptions((prev) => ({ ...prev, captionX: null, captionY: null }));
         setActiveClipId(null);
         setJobs([]);
@@ -366,6 +392,8 @@ export default function App() {
 
   const startNewVideo = useCallback(() => {
     setProject(null);
+    captionDirtyRef.current = false;
+    lastCaptionRef.current = null;
     setOptions((prev) => ({ ...prev, captionX: null, captionY: null }));
     setActiveClipId(null);
     setJobs([]);

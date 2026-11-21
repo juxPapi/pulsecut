@@ -210,12 +210,41 @@ export function getStyle(id) {
 export function resolveStyle(id, options = {}) {
   const base = getStyle(id);
   const out = { ...base };
-  for (const key of ['font', 'color', 'accent', 'outline', 'uppercase', 'tilt', 'highlight', 'position', 'captionX', 'captionY']) {
-    if (options[key] !== null && options[key] !== undefined && options[key] !== '') out[key] = options[key];
+  const safeText = (value, fallback, max = 80) => {
+    const text = String(value ?? '');
+    return text.length <= max && /^[A-Za-z0-9 ,.'\-]+$/.test(text) ? text : fallback;
+  };
+  const safeColor = (value, fallback) =>
+    /^#[0-9a-f]{6}$/i.test(String(value ?? '')) ? String(value) : fallback;
+  if (options.font !== undefined && options.font !== null && options.font !== '') {
+    out.font = FONT_CHOICES.includes(String(options.font)) ? String(options.font) : base.font;
   }
-  if (options.opacity !== undefined && options.opacity !== null) out.opacity = Number(options.opacity);
-  if (options.boxOpacity !== undefined && options.boxOpacity !== null && out.box) {
-    out.boxOpacity = Number(options.boxOpacity);
+  for (const key of ['color', 'accent', 'outline', 'box']) {
+    if (options[key] !== undefined && options[key] !== null && options[key] !== '') {
+      out[key] = safeColor(options[key], base[key] || '#000000');
+    }
+  }
+  for (const key of ['uppercase', 'highlight']) {
+    if (options[key] !== undefined && options[key] !== null) out[key] = Boolean(options[key]);
+  }
+  if (options.tilt !== undefined && options.tilt !== null) {
+    const tilt = Number(options.tilt);
+    out.tilt = Number.isFinite(tilt) ? Math.min(35, Math.max(-35, tilt)) : base.tilt;
+  }
+  if (options.position !== undefined && options.position !== null && options.position !== '') {
+    out.position = safeText(options.position, base.position || 'bottom');
+  }
+  for (const key of ['captionX', 'captionY']) {
+    if (options[key] !== undefined && options[key] !== null) {
+      const value = Number(options[key]);
+      out[key] = Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : base[key] ?? 0.5;
+    }
+  }
+  for (const key of ['opacity', 'boxOpacity']) {
+    if (options[key] !== undefined && options[key] !== null) {
+      const value = Number(options[key]);
+      out[key] = Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : base[key] ?? 1;
+    }
   }
   return out;
 }
@@ -225,9 +254,9 @@ export function resolveStyle(id, options = {}) {
 function hexToAss(hex, alpha = 0) {
   const clean = String(hex || '#FFFFFF').replace('#', '');
   const full = clean.length === 3 ? clean.split('').map((c) => c + c).join('') : clean.padEnd(6, '0').slice(0, 6);
-  const r = full.slice(0, 2);
-  const g = full.slice(2, 4);
-  const b = full.slice(4, 6);
+  const r = /^[0-9a-f]{2}$/i.test(full.slice(0, 2)) ? full.slice(0, 2) : 'FF';
+  const g = /^[0-9a-f]{2}$/i.test(full.slice(2, 4)) ? full.slice(2, 4) : 'FF';
+  const b = /^[0-9a-f]{2}$/i.test(full.slice(4, 6)) ? full.slice(4, 6) : 'FF';
   return `&H${Math.round(alpha * 255).toString(16).padStart(2, '0').toUpperCase()}${b}${g}${r}&`.toUpperCase();
 }
 
