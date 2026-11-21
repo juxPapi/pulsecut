@@ -148,6 +148,8 @@ async function preparePlayback(id) {
       height: rotated ? project.width : project.height,
       duration: project.duration,
       hasAudio: project.hasAudio !== false,
+      videoCodec: project.videoCodec,
+      sourceFile: project.filePath,
       onProgress: (percent) => broadcast('playback', { projectId: id, percent: Math.round(percent) }),
     });
     project.previewPath = playbackFile(id);
@@ -470,6 +472,9 @@ async function runRenderJob(job) {
       },
     });
     await fsp.mkdir(path.dirname(finalPath), { recursive: true });
+    // Windows refuses to rename over an existing file. Re-rendering a clip has
+    // to replace the previous export instead of failing at the final step.
+    await fsp.rm(finalPath, { force: true });
     await fsp.rename(tempOutput, finalPath);
     job.status = 'done';
     job.progress = 100;
@@ -555,43 +560,102 @@ app.get('/api/projects/:id/exports/:file', requireProject(async (req, res) => {
 }));
 
 // ------------------------------------------------------------------ preview render
+// Every preview used to share one folder, so two rapid clicks overwrote each
+// other's captions.ass / font files and produced a broken or mismatched clip.
+// Give each render its own scratch directory, serialise FFmpeg runs, and key the
+// output by settings so an unchanged preview is served from disk instantly.
+const previewDir = path.join(TMP_DIR, 'preview');
+let previewChain = Promise.resolve();
+const previewInflight = new Map();
+
+async function trimOldPreviews() {
+  const files = await fsp.readdir(previewDir).catch(() => []);
+  const videos = files
+    .filter((name) => name.endsWith('.mp4'))
+    .map((name) => ({ name, at: 0 }))
+    .filter((item) => !item.name.startsWith('.work-'));
+  const stats = await Promise.all(
+    videos.map(async (item) => {
+      try {
+        const stat = await fsp.stat(path.join(previewDir, item.name));
+        return { ...item, at: stat.mtimeMs };
+      } catch {
+        return null;
+      }
+    })
+  );
+  const stale = stats.filter(Boolean).sort((a, b) => b.at - a.at).slice(8);
+  await Promise.all(stale.map((item) => fsp.rm(path.join(previewDir, item.name), { force: true }).catch(() => {})));
+}
+
 app.post('/api/projects/:id/clips/:clipId/preview', requireProject(async (req, res) => {
   const project = req.project;
   const clip = project.clips?.find((item) => item.id === req.params.clipId);
   if (!clip) return res.status(404).json({ error: 'Clip not found' });
   const aspect = ASPECTS[req.body?.aspect] || ASPECTS['9:16'];
   const style = resolveStyle(req.body?.styleId, req.body?.options || {});
-  const workDir = path.join(TMP_DIR, 'preview');
-  await fsp.mkdir(workDir, { recursive: true });
-  const file = `${project.id}-${clip.id}-${aspect.id.replace(':', 'x')}.mp4`;
+  const layout = resolveLayout(req.body?.layout);
+  const key = JSON.stringify({ p: project.id, c: clip.id, a: aspect.id, s: style, l: layout, f: clip.focus, fy: clip.focusY, z: clip.zoom, st: clip.start, en: clip.end, cues: clipCues(clip) });
+  const hash = crypto.createHash('sha1').update(key).digest('hex').slice(0, 10);
+  const file = `${project.id}-${clip.id}-${aspect.id.replace(':', 'x')}-${hash}.mp4`;
+  const output = path.join(previewDir, file);
+
   try {
-    await renderClip({
-      input: project.filePath,
-      output: path.join(workDir, file),
-      start: clip.start,
-      end: Math.min(clip.end, clip.start + 6),
-      width: Math.round((aspect.width * 0.5) / 2) * 2,
-      height: Math.round((aspect.height * 0.5) / 2) * 2,
-      srcW: project.width,
-      srcH: project.height,
-      focus: clip.focus ?? 0.5,
-      focusY: clip.focusY ?? 0.5,
-      zoom: clip.zoom ?? 1,
-      cues: clipCues(clip),
-      style,
-      layout: resolveLayout(req.body?.layout),
-      hasAudio: project.hasAudio !== false,
-      appendOutro: true,
-    });
-    res.json({ url: `/api/previews/${file}?v=${Date.now()}` });
+    await fsp.mkdir(previewDir, { recursive: true });
+    const exists = await fsp.stat(output).then(() => true).catch(() => false);
+    if (!exists) {
+      let work = previewInflight.get(file);
+      if (!work) {
+        const workDir = path.join(previewDir, `.work-${crypto.randomUUID().slice(0, 8)}`);
+        await fsp.mkdir(workDir, { recursive: true });
+        const scratchOutput = path.join(workDir, file);
+        work = previewChain
+          .then(() => renderClip({
+            input: project.filePath,
+            output: scratchOutput,
+            start: clip.start,
+            end: Math.min(clip.end, clip.start + 6),
+            width: Math.round((aspect.width * 0.5) / 2) * 2,
+            height: Math.round((aspect.height * 0.5) / 2) * 2,
+            srcW: project.width,
+            srcH: project.height,
+            focus: clip.focus ?? 0.5,
+            focusY: clip.focusY ?? 0.5,
+            zoom: clip.zoom ?? 1,
+            cues: clipCues(clip),
+            style,
+            layout,
+            hasAudio: project.hasAudio !== false,
+            appendOutro: true,
+          }))
+          .then(async (result) => {
+            await fsp.rm(output, { force: true });
+            await fsp.rename(scratchOutput, output);
+            return result;
+          })
+          .finally(async () => {
+            await fsp.rm(workDir, { recursive: true, force: true }).catch(() => {});
+          });
+        previewChain = work.catch(() => {});
+        previewInflight.set(file, work);
+      }
+      try {
+        await work;
+      } finally {
+        previewInflight.delete(file);
+      }
+    }
+    trimOldPreviews().catch(() => {});
+    return res.json({ url: `/api/previews/${file}?v=${Date.now()}` });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    return res.status(500).json({ error: error.message });
   }
 }));
 
 app.get('/api/previews/:file', (req, res) => {
   const file = path.basename(req.params.file);
-  res.sendFile(path.join(TMP_DIR, 'preview', file));
+  res.set('Cache-Control', 'public, max-age=31536000, immutable');
+  return res.sendFile(path.join(previewDir, file));
 });
 
 // ------------------------------------------------------------------ static

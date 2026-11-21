@@ -57,6 +57,17 @@ function wavToFloat32(buffer) {
   if (!dataOffset) throw new Error('WAV file has no data chunk.');
   const bytesPerSample = bitDepth / 8;
   const frames = Math.floor(dataLength / (bytesPerSample * channels));
+
+  // extractAudio produces aligned 16 kHz mono PCM — the overwhelmingly common
+  // case. Read it through a typed array instead of per-sample Buffer calls; on a
+  // long video this removes tens of millions of function calls from startup.
+  if (bitDepth === 16 && channels === 1 && sampleRate === SAMPLE_RATE && (buffer.byteOffset + dataOffset) % 2 === 0) {
+    const view = new Int16Array(buffer.buffer, buffer.byteOffset + dataOffset, frames);
+    const out = new Float32Array(frames);
+    for (let i = 0; i < frames; i += 1) out[i] = view[i] / 32768;
+    return out;
+  }
+
   const samples = new Float32Array(frames);
   for (let i = 0; i < frames; i += 1) {
     let sum = 0;

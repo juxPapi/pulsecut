@@ -12,21 +12,24 @@ let blurBuffer = null;
  * outside the visible frame and only exists so the blur kernel never samples
  * transparent pixels at the border.
  */
-function drawBlurBackdrop(ctx, video, box, width, height, sigma, dpr) {
+function drawBlurBackdrop(ctx, video, box, width, height, sigma) {
   const pad = Math.ceil(sigma * 3);
   const outerW = width + pad * 2;
   const outerH = height + pad * 2;
 
   if (!blurBuffer) blurBuffer = document.createElement('canvas');
-  const pixelW = Math.ceil(outerW * dpr);
-  const pixelH = Math.ceil(outerH * dpr);
+  // The result is blurred, so full device-pixel resolution is wasted work.
+  // Rendering the scratch buffer at 1x cuts the blur cost by up to 4x on
+  // high-DPI screens with no visible difference.
+  const pixelW = Math.ceil(outerW);
+  const pixelH = Math.ceil(outerH);
   if (blurBuffer.width !== pixelW || blurBuffer.height !== pixelH) {
     blurBuffer.width = pixelW;
     blurBuffer.height = pixelH;
   }
 
   const buffer = blurBuffer.getContext('2d');
-  buffer.setTransform(dpr, 0, 0, dpr, 0, 0);
+  buffer.setTransform(1, 0, 0, 1, 0, 0);
   buffer.clearRect(0, 0, outerW, outerH);
   buffer.imageSmoothingQuality = 'high';
 
@@ -131,6 +134,21 @@ export default function PhonePreview({
   layoutRef.current = layout;
   const drawnRef = useRef({});
   const contentEndRef = useRef(0);
+  const lastEmittedRef = useRef(null);
+
+  // Remember the value we reported to the parent so a re-render with that same
+  // playhead cannot turn into a second seek back into the video.
+  const emitPlayhead = (time) => {
+    lastEmittedRef.current = time;
+    onPlayhead(time);
+  };
+  const seekVideo = (time) => {
+    const video = videoRef.current;
+    if (!video || !Number.isFinite(time)) return;
+    const target = Math.max(0, time);
+    if (Math.abs(video.currentTime - target) < 0.05) return;
+    video.currentTime = target > 0 ? target : 0.001;
+  };
 
   const updateFrame = (patch) => setFrame((previous) => resolveFrame({ ...previous, ...patch }));
   const commitFrame = (next = frameValue) => {
@@ -189,7 +207,7 @@ export default function PhonePreview({
 
     if (plan.mode === 'blur') {
       const { backdrop, foreground, sigma } = plan;
-      drawBlurBackdrop(ctx, video, backdrop, width, height, sigma, dpr);
+      drawBlurBackdrop(ctx, video, backdrop, width, height, sigma);
       ctx.drawImage(video, 0, 0, vw, vh, foreground.x, foreground.y, foreground.width, foreground.height);
       if (outroActive) drawOutro(ctx, width, height, outroProgress);
       return;
@@ -211,9 +229,10 @@ export default function PhonePreview({
     // A remounted canvas (e.g. returning from burn-in preview) starts blank; the
     // live video also reloads at 0:00, so put it back on the clip start.
     drawnRef.current.stamp = null;
-    if (!previewUrl && clip) video.currentTime = clip.start > 0 ? clip.start : 0.001;
+    if (!previewUrl && clip && video.readyState >= 1) seekVideo(clip.start);
 
     let frame = 0;
+    let videoFrame = null;
     let running = false;
     const paint = () => draw();
     const loop = () => {
@@ -223,11 +242,26 @@ export default function PhonePreview({
     const start = () => {
       if (running) return;
       running = true;
-      loop();
+      // Paint once per presented video frame instead of once per display refresh.
+      // Canvas blur/filter work is expensive and was stalling the UI at 60 fps.
+      if (typeof video.requestVideoFrameCallback === 'function') {
+        const onVideoFrame = () => {
+          if (!running) return;
+          draw();
+          videoFrame = video.requestVideoFrameCallback(onVideoFrame);
+        };
+        videoFrame = video.requestVideoFrameCallback(onVideoFrame);
+      } else {
+        loop();
+      }
     };
     const stop = () => {
       running = false;
       cancelAnimationFrame(frame);
+      if (videoFrame !== null && typeof video.cancelVideoFrameCallback === 'function') {
+        video.cancelVideoFrameCallback(videoFrame);
+        videoFrame = null;
+      }
       paint();
     };
 
@@ -244,6 +278,9 @@ export default function PhonePreview({
     return () => {
       running = false;
       cancelAnimationFrame(frame);
+      if (videoFrame !== null && typeof video.cancelVideoFrameCallback === 'function') {
+        video.cancelVideoFrameCallback(videoFrame);
+      }
       video.removeEventListener('play', start);
       video.removeEventListener('playing', start);
       video.removeEventListener('pause', stop);
@@ -264,11 +301,9 @@ export default function PhonePreview({
     setPreviewError(null);
     const video = videoRef.current;
     if (video && clip) {
-      // Nudge zero to 0.001: a same-time assignment is not a seek, and some
-      // browsers keep the first decoded frame blank until a seek or play.
-      video.currentTime = clip.start > 0 ? clip.start : 0.001;
+      seekVideo(clip.start);
       setPlaying(false);
-      onPlayhead(clip.start);
+      emitPlayhead(clip.start);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clip?.id]);
@@ -282,27 +317,35 @@ export default function PhonePreview({
     contentEndRef.current = previewUrl ? Math.min(clip.end, clip.start + 6) : clip.end;
   }, [clip?.id, previewUrl]);
 
+  // Only external playhead changes (a transcript click, choosing a clip) should
+  // seek the video. Playhead updates we emitted ourselves must not bounce back as
+  // a second seek — that fight is what made editing playback stutter and freeze.
   useEffect(() => {
     const video = videoRef.current;
-    if (!video || playing || !clip) return;
-    if (Math.abs(video.currentTime - playhead) > 0.45) {
-      video.currentTime = playhead > 0 ? playhead : 0.001;
-    }
+    if (!video || !clip || playing) return;
+    if (playhead === lastEmittedRef.current) return;
+    if (Math.abs(video.currentTime - playhead) < 0.05) return;
+    seekVideo(playhead);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [playhead, playing, clip]);
 
-  // A freshly built browser copy reloads the element at 0:00; keep it on the clip start.
-  useEffect(() => {
+  // A rebuilt browser preview reloads at 0:00; seeking is ignored until metadata
+  // exists, so restore the playhead from the load event instead of a timer.
+  const restoreAfterLoad = () => {
     const video = videoRef.current;
-    if (video && clip) video.currentTime = clip.start > 0 ? clip.start : 0.001;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [playback?.version]);
+    if (!video || previewUrl || !clip) return;
+    const inRange = playheadRef.current >= clip.start - 0.05 && playheadRef.current <= clip.end + OUTRO_DURATION;
+    seekVideo(inRange ? playheadRef.current : clip.start);
+    draw();
+  };
 
   const toggle = async () => {
     const video = videoRef.current;
     if (!video) return;
     if (video.paused) {
-      if (clip && (video.currentTime < clip.start || video.currentTime >= clip.end + OUTRO_DURATION - 0.1)) {
-        video.currentTime = clip.start;
+      if (clip && !previewUrl) {
+        const loopEnd = contentEndRef.current + OUTRO_DURATION;
+        if (video.currentTime < clip.start || video.currentTime >= loopEnd - 0.1) seekVideo(clip.start);
       }
       await video.play().catch(() => {});
       setPlaying(true);
@@ -315,13 +358,15 @@ export default function PhonePreview({
   const onTimeUpdate = () => {
     const video = videoRef.current;
     if (!video || !clip) return;
+    const loopEnd = contentEndRef.current + OUTRO_DURATION;
     // The like & subscribe end card runs after the content, then playback loops.
-    if (video.currentTime >= clip.end + OUTRO_DURATION - 0.03) {
-      video.currentTime = clip.start;
-      onPlayhead(clip.start);
+    if (loopEnd > 0 && video.currentTime >= loopEnd - 0.03) {
+      const restartAt = previewUrl ? 0 : clip.start;
+      video.currentTime = restartAt > 0 ? restartAt : 0.001;
+      emitPlayhead(restartAt);
       return;
     }
-    onPlayhead(video.currentTime);
+    emitPlayhead(video.currentTime);
   };
 
   const cue = useMemo(() => {
@@ -431,8 +476,11 @@ export default function PhonePreview({
               className="phone-video"
               src={previewUrl || videoSrc}
               playsInline
+              preload="auto"
               muted={muted}
               onTimeUpdate={onTimeUpdate}
+              onLoadedMetadata={restoreAfterLoad}
+              onEnded={() => setPlaying(false)}
               onPlay={() => setPlaying(true)}
               onPause={() => setPlaying(false)}
               style={{ visibility: previewUrl ? 'visible' : 'hidden' }}

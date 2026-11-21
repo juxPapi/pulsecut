@@ -1,11 +1,11 @@
 import { spawn, execFileSync } from 'node:child_process';
 import fs from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, openSync, readSync, closeSync, fstatSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { buildAss } from '../shared/captions.js';
 import { composeLayout } from '../shared/framing.js';
-import { OUTRO_DURATION, OUTRO_BACKGROUND, OUTRO_LIME, OUTRO_INK, OUTRO_TEXT, CHANNEL, OUTRO_GEOMETRY } from '../shared/outro.js';
+import { OUTRO_DURATION, OUTRO_BACKGROUND, OUTRO_LIME, OUTRO_INK, OUTRO_TEXT, OUTRO_GEOMETRY } from '../shared/outro.js';
 
 const nodeRequire = createRequire(import.meta.url);
 
@@ -96,15 +96,52 @@ export async function probe(file) {
 
 const PLAYABLE_CODECS = new Set(['h264', 'vp8', 'vp9', 'av1']);
 const PLAYABLE_CONTAINERS = /\.(mp4|m4v|mov|webm)$/i;
+const FASTSTART_CONTAINERS = /\.(mp4|m4v|mov)$/i;
+
+/**
+ * A non-faststart MP4 keeps its `moov` index at the end of the file. The browser
+ * then has to range-request the tail before it can seek, which makes scrubbing a
+ * long stream feel frozen. Peek at the header instead of probing the whole file.
+ */
+export function isFaststart(file) {
+  if (!file || !FASTSTART_CONTAINERS.test(file)) return false;
+  let fd;
+  try {
+    fd = openSync(file, 'r');
+    const size = fstatSync(fd).size;
+    const length = Math.min(size, 2 * 1024 * 1024);
+    const buffer = Buffer.alloc(length);
+    readSync(fd, buffer, 0, length, 0);
+    const moov = buffer.indexOf('moov');
+    const mdat = buffer.indexOf('mdat');
+    return moov !== -1 && (mdat === -1 || moov < mdat);
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
 
 /** Chromium cannot decode HEVC, ProRes, MPEG-2 and friends, so those need a small H.264 stand-in to scrub in the browser. */
 export function needsPlaybackCopy(info, file) {
   if (!PLAYABLE_CODECS.has(String(info?.videoCodec || '').toLowerCase())) return true;
-  return Boolean(file) && !PLAYABLE_CONTAINERS.test(file);
+  if (file && !PLAYABLE_CONTAINERS.test(file)) return true;
+  // A playable codec can still be unusable for scrubbing when the index is at the end.
+  if (file && FASTSTART_CONTAINERS.test(file) && !isFaststart(file)) return true;
+  return false;
 }
 
 /** Fast, low-bitrate H.264/AAC copy used only for the in-app live preview. */
-export async function makePlaybackCopy(input, output, { width, height, duration, hasAudio = true, onProgress } = {}) {
+export async function makePlaybackCopy(input, output, {
+  width,
+  height,
+  duration,
+  hasAudio = true,
+  videoCodec,
+  sourceFile,
+  onProgress,
+} = {}) {
+  await fs.mkdir(path.dirname(output), { recursive: true });
   const cap = 1280;
   const srcW = Number(width) || cap;
   const srcH = Number(height) || cap;
@@ -112,17 +149,32 @@ export async function makePlaybackCopy(input, output, { width, height, duration,
   const even = (value) => Math.max(2, Math.round(value / 2) * 2);
   const outW = even(srcW * ratio);
   const outH = even(srcH * ratio);
-  await fs.mkdir(path.dirname(output), { recursive: true });
-  const args = [
-    '-hide_banner', '-y',
-    '-i', input,
-    '-vf', `scale=${outW}:${outH}:flags=bicubic,fps=30`,
-    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '26', '-pix_fmt', 'yuv420p',
-    ...(hasAudio ? ['-c:a', 'aac', '-b:a', '128k'] : ['-an']),
-    '-movflags', '+faststart',
-    '-progress', 'pipe:1', '-nostats',
-    output,
-  ];
+
+  // Playable H.264 in an MP4 only needs the index moved to the front. A stream
+  // copy is seconds instead of minutes for a multi-gigabyte source.
+  const canRemux = PLAYABLE_CODECS.has(String(videoCodec || '').toLowerCase())
+    && FASTSTART_CONTAINERS.test(sourceFile || input);
+
+  const args = canRemux
+    ? [
+        '-hide_banner', '-y',
+        '-i', input,
+        '-map', '0', '-dn', '-ignore_unknown',
+        '-c', 'copy',
+        '-movflags', '+faststart',
+        '-progress', 'pipe:1', '-nostats',
+        output,
+      ]
+    : [
+        '-hide_banner', '-y',
+        '-i', input,
+        '-vf', `scale=${outW}:${outH}:flags=bicubic,fps=30`,
+        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '26', '-pix_fmt', 'yuv420p',
+        ...(hasAudio ? ['-c:a', 'aac', '-b:a', '128k'] : ['-an']),
+        '-movflags', '+faststart',
+        '-progress', 'pipe:1', '-nostats',
+        output,
+      ];
   await run(FFMPEG, args, {
     onStdout: (chunk) => {
       const match = /out_time=(\d+):(\d+):([\d.]+)/.exec(chunk);
@@ -181,13 +233,46 @@ function layoutGraph({ layout, width, height, srcW, srcH, frame }) {
   return `[0:v]${crop(plan.box)},scale=${width}:${height}:flags=lanczos[composed]`;
 }
 
-/** Render the animated like & subscribe end card that follows the composed clip. */
-export async function renderOutro({ output, width, height, duration = OUTRO_DURATION, onProgress }) {
-  const dir = path.dirname(output);
-  await fs.mkdir(dir, { recursive: true });
-  const fontDest = path.join(dir, 'arialbd.ttf');
-  await fs.copyFile('C:\\Windows\\Fonts\\arialbd.ttf', fontDest);
+// The end card used to hard-code C:\Windows\Fonts\arialbd.ttf, which made every
+// render fail on machines without that exact font. Resolve a few known locations
+// once and fall back to FFmpeg's own font selection when none is available.
+const FONT_CANDIDATES = [
+  process.env.OUTRO_FONT,
+  'C:\\Windows\\Fonts\\arialbd.ttf',
+  'C:\\Windows\\Fonts\\ariblk.ttf',
+  'C:\\Windows\\Fonts\\segoeb.ttf',
+  'C:\\Windows\\Fonts\\segoeui.ttf',
+  '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+  '/System/Library/Fonts/Supplemental/Arial Bold.ttf',
+].filter(Boolean);
 
+let fontSourcePromise = null;
+async function outroFont(dir) {
+  if (!fontSourcePromise) {
+    fontSourcePromise = (async () => {
+      for (const candidate of FONT_CANDIDATES) {
+        try {
+          if (existsSync(candidate)) return candidate;
+        } catch {
+          /* try the next one */
+        }
+      }
+      return null;
+    })();
+  }
+  const source = await fontSourcePromise;
+  if (!source) return null;
+  const dest = path.join(dir, 'outro-font.ttf');
+  try {
+    await fs.copyFile(source, dest);
+    return 'outro-font.ttf';
+  } catch {
+    return null;
+  }
+}
+
+/** drawtext/drawbox chain for the end card, shared by inline and standalone renders. */
+function outroGraph({ width, height, fontName }) {
   const w = Math.round(width);
   const h = Math.round(height);
   const geo = OUTRO_GEOMETRY;
@@ -198,23 +283,35 @@ export async function renderOutro({ output, width, height, duration = OUTRO_DURA
   const subH = Math.round(w * 0.12);
   const subX = Math.round((w - subW) / 2);
   const subY = Math.round(h * geo.subscribe.y);
+  const font = fontName ? `fontfile=${fontName}` : 'font=Arial';
+  const text = (value, color, size, x, y, enable) =>
+    `drawtext=${font}:text='${value}':fontcolor=${color}:fontsize=${size}:x=${x}:y=${y}:enable='${enable}'`;
 
-  // `drawbox` thickness is measured inward from the edges, so half the box size
+  // drawbox thickness is measured inward from the edges, so half the box size
   // fills it completely. That gives a solid CTA button behind centered text.
-  const filter = [
-    `drawtext=fontfile=arialbd.ttf:text='${CHANNEL.handle}':fontcolor=${OUTRO_TEXT}:fontsize=${Math.round(w * geo.handle.size)}:x=(w-text_w)/2:y=${Math.round(h * geo.handle.y)}:enable='between(t,0,0.8)'`,
+  return [
+    text(geo.handle.text, OUTRO_TEXT, Math.round(w * geo.handle.size), '(w-text_w)/2', Math.round(h * geo.handle.y), 'between(t,0,0.8)'),
     `drawbox=x=${likeX}:y=${likeY}:w=${likeSize}:h=${likeSize}:color=${OUTRO_LIME}@0.92:thickness=${Math.ceil(likeSize / 2)}:enable='between(t,0.8,2)'`,
-    `drawtext=fontfile=arialbd.ttf:text='${geo.like.text}':fontcolor=${OUTRO_INK}:fontsize=${Math.round(w * geo.like.textSize)}:x=(w-text_w)/2:y=${likeY + Math.round(likeSize * 0.38)}:enable='between(t,0.8,2)'`,
-    `drawtext=fontfile=arialbd.ttf:text='${geo.like.counter}':fontcolor=${OUTRO_LIME}:fontsize=${Math.round(w * 0.04)}:x=(w-text_w)/2:y=${Math.round(h * geo.like.counterY)}:enable='between(t,0.8,2)'`,
+    text(geo.like.text, OUTRO_INK, Math.round(w * geo.like.textSize), '(w-text_w)/2', likeY + Math.round(likeSize * 0.38), 'between(t,0.8,2)'),
+    text(geo.like.counter, OUTRO_LIME, Math.round(w * 0.04), '(w-text_w)/2', Math.round(h * geo.like.counterY), 'between(t,0.8,2)'),
     `drawbox=x=${subX}:y=${subY}:w=${subW}:h=${subH}:color=${OUTRO_LIME}@0.95:thickness=${Math.ceil(subH / 2)}:enable='between(t,2,4)'`,
-    `drawtext=fontfile=arialbd.ttf:text='${geo.subscribe.text}':fontcolor=${OUTRO_INK}:fontsize=${Math.round(w * geo.subscribe.textSize)}:x=(w-text_w)/2:y=${subY + Math.round(subH * 0.22)}:enable='between(t,2,4)'`,
+    text(geo.subscribe.text, OUTRO_INK, Math.round(w * geo.subscribe.textSize), '(w-text_w)/2', subY + Math.round(subH * 0.22), 'between(t,2,4)'),
   ].join(',');
+}
+
+/** Render the animated like & subscribe end card on its own (kept for callers that need just the card). */
+export async function renderOutro({ output, width, height, duration = OUTRO_DURATION, onProgress }) {
+  const dir = path.dirname(output);
+  await fs.mkdir(dir, { recursive: true });
+  const fontName = await outroFont(dir);
+  const w = Math.round(width);
+  const h = Math.round(height);
 
   const args = [
     '-hide_banner', '-y',
     '-f', 'lavfi',
     '-i', `color=c=${OUTRO_BACKGROUND}:s=${w}x${h}:d=${duration}:r=30`,
-    '-vf', filter,
+    '-vf', outroGraph({ width: w, height: h, fontName }),
     '-t', String(duration),
     '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '21', '-pix_fmt', 'yuv420p',
     '-movflags', '+faststart',
@@ -232,7 +329,11 @@ export async function renderOutro({ output, width, height, duration = OUTRO_DURA
   return { path: output, size: stats.size };
 }
 
-/** Render one clip with burned-in captions, reframed to the target aspect and layout, then append the outro. */
+/**
+ * Render one clip with burned-in captions and append the outro in a single FFmpeg
+ * pass. The old path encoded the clip, encoded a separate outro, then re-encoded
+ * both to concatenate them — three encodes and two scratch files per export.
+ */
 export async function renderClip({
   input,
   output,
@@ -254,21 +355,33 @@ export async function renderClip({
 }) {
   const dir = path.dirname(output);
   await fs.mkdir(dir, { recursive: true });
-  const assPath = path.join(dir, 'captions.ass');
-  await fs.writeFile(assPath, buildAss({ width, height, cues, style, offset: start }), 'utf8');
+  await fs.writeFile(path.join(dir, 'captions.ass'), buildAss({ width, height, cues, style, offset: start }), 'utf8');
+  const fontName = appendOutro ? await outroFont(dir) : null;
 
-  const filter = [
-    layoutGraph({ layout, width, height, srcW, srcH, frame: { focus, focusY, zoom } }),
-    '[composed]setsar=1,ass=captions.ass[vout]',
-  ].join(';');
   const duration = Math.max(0.4, end - start);
+  const total = duration + (appendOutro ? OUTRO_DURATION : 0);
+  const w = Math.round(width);
+  const h = Math.round(height);
+
+  const parts = [
+    layoutGraph({ layout, width: w, height: h, srcW, srcH, frame: { focus, focusY, zoom } }),
+    '[composed]setsar=1,fps=30,format=yuv420p,ass=captions.ass[vclip]',
+  ];
+  if (appendOutro) {
+    parts.push(`[1:v]${outroGraph({ width: w, height: h, fontName })},setsar=1,fps=30,format=yuv420p[voutro]`);
+    parts.push('[vclip][voutro]concat=n=2:v=1:a=0[outv]');
+  } else {
+    parts.push('[vclip]null[outv]');
+  }
+
   const args = [
     '-hide_banner', '-y',
     '-ss', String(start),
-    '-i', input,
     '-t', String(duration),
-    '-filter_complex', filter,
-    '-map', '[vout]',
+    '-i', input,
+    ...(appendOutro ? ['-f', 'lavfi', '-i', `color=c=${OUTRO_BACKGROUND}:s=${w}x${h}:d=${OUTRO_DURATION}:r=30`] : []),
+    '-filter_complex', parts.join(';'),
+    '-map', '[outv]',
     ...(hasAudio ? ['-map', '0:a?', '-c:a', 'aac', '-b:a', '160k'] : ['-an']),
     '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '21', '-pix_fmt', 'yuv420p',
     '-movflags', '+faststart',
@@ -282,38 +395,10 @@ export async function renderClip({
       const match = /out_time=(\d+):(\d+):([\d.]+)/.exec(chunk);
       if (match && onProgress) {
         const seconds = Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]);
-        onProgress(Math.min(99, (seconds / duration) * 100));
+        onProgress(Math.min(99, (seconds / total) * 100));
       }
     },
   });
-
-  // Append the animated like & subscribe end card to the composed content.
-  if (appendOutro) {
-    const outroPath = path.join(dir, 'outro.mp4');
-    await renderOutro({ output: outroPath, width, height, duration: OUTRO_DURATION });
-    const finalOut = path.join(dir, path.basename(output).replace(/\.mp4$/, '') + '-with-outro.mp4');
-    const finalArgs = [
-      '-hide_banner', '-y',
-      '-i', output,
-      '-i', outroPath,
-      '-filter_complex', '[0:v][1:v]concat=n=2:v=1:a=0[outv]',
-      '-map', '[outv]',
-      ...(hasAudio ? ['-map', '0:a?', '-c:a', 'aac', '-b:a', '160k'] : ['-an']),
-      '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '21', '-pix_fmt', 'yuv420p',
-      '-movflags', '+faststart',
-      '-progress', 'pipe:1', '-nostats',
-      finalOut,
-    ];
-    await run(FFMPEG, finalArgs, { cwd: dir, onStdout: (chunk) => {
-      const match = /out_time=(\d+):(\d+):([\d.]+)/.exec(chunk);
-      if (match && onProgress) {
-        const seconds = Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]);
-        onProgress(Math.min(99, (seconds / (duration + OUTRO_DURATION)) * 100));
-      }
-    } });
-    await fs.rm(output, { force: true });
-    await fs.rename(finalOut, output);
-  }
 
   const stats = await fs.stat(output);
   return { path: output, size: stats.size };

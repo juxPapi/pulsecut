@@ -1,7 +1,48 @@
-import { useMemo } from 'react';
+import { memo, useMemo } from 'react';
 import { formatTime } from '../api.js';
 
 const MAX_WORDS = 7000;
+
+/** Words are sorted by start time, so the active word is a binary search away. */
+function activeWordAt(words, playhead) {
+  let lo = 0;
+  let hi = words.length - 1;
+  let found = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (words[mid].start <= playhead) {
+      found = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  if (found >= 0 && playhead < words[found].end) return words[found];
+  return null;
+}
+
+// The transcript can hold thousands of words. Re-creating every span on each
+// `timeupdate` was the main cause of playback freezing. Only the one line that
+// contains the spoken word is allowed to re-render.
+const TranscriptLine = memo(function TranscriptLine({ line, inClip, activeWordStart, onSeek }) {
+  return (
+    <p className={`transcript-line ${inClip ? 'in-clip' : ''}`}>
+      {line.words.map((word, index) => {
+        const active = activeWordStart !== null && word.start <= activeWordStart && activeWordStart < word.end;
+        return (
+          <span
+            key={`${word.start}-${index}`}
+            className={active ? 'word active' : 'word'}
+            onClick={() => onSeek(word.start)}
+            title={formatTime(word.start)}
+          >
+            {word.text}{' '}
+          </span>
+        );
+      })}
+    </p>
+  );
+});
 
 export default function TranscriptPanel({ project, clip, playhead, onSeek }) {
   const words = project.transcript?.words || [];
@@ -23,6 +64,8 @@ export default function TranscriptPanel({ project, clip, playhead, onSeek }) {
     return groups;
   }, [words]);
 
+  const activeWord = useMemo(() => activeWordAt(words, playhead), [words, playhead]);
+
   return (
     <section className="transcript">
       <div className="transcript-head">
@@ -35,23 +78,16 @@ export default function TranscriptPanel({ project, clip, playhead, onSeek }) {
       <div className="transcript-scroll">
         {!lines.length && <p className="rail-empty">The transcript lands here as soon as the audio has been read.</p>}
         {lines.map((line) => {
-          const inClip = clip && line.end > clip.start && line.start < clip.end;
+          const inClip = Boolean(clip && line.end > clip.start && line.start < clip.end);
+          const isActiveLine = Boolean(activeWord && activeWord.start >= line.start && activeWord.start < line.end);
           return (
-            <p key={`${line.start}-${line.end}`} className={`transcript-line ${inClip ? 'in-clip' : ''}`}>
-              {line.words.map((word, index) => {
-                const active = playhead >= word.start && playhead < word.end;
-                return (
-                  <span
-                    key={`${word.start}-${index}`}
-                    className={active ? 'word active' : 'word'}
-                    onClick={() => onSeek(word.start)}
-                    title={formatTime(word.start)}
-                  >
-                    {word.text}{' '}
-                  </span>
-                );
-              })}
-            </p>
+            <TranscriptLine
+              key={`${line.start}-${line.end}`}
+              line={line}
+              inClip={inClip}
+              activeWordStart={isActiveLine ? activeWord.start : null}
+              onSeek={onSeek}
+            />
           );
         })}
       </div>

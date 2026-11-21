@@ -105,6 +105,10 @@ export default function App() {
     setOptions((prev) => ({ ...prev, [key]: value }));
   }, []);
 
+  // Stable identity keeps the memoized transcript lines from re-rendering on
+  // every playhead tick.
+  const seekTo = useCallback((time) => setPlayhead(time), []);
+
   const chooseLayout = useCallback(
     (next) => {
       const id = resolveLayout(next);
@@ -305,8 +309,11 @@ export default function App() {
             project={project}
             activeClipId={clip?.id}
             onSelect={(id) => {
+              const next = project.clips?.find((item) => item.id === id);
               setActiveClipId(id);
-              setPlayhead(0);
+              // Move the playhead into the new clip. Setting it to 0 made the
+              // preview fight two competing seeks and stutter on long files.
+              setPlayhead(next?.start ?? 0);
             }}
             settings={settings}
             onSettings={setSettings}
@@ -337,7 +344,7 @@ export default function App() {
                 project={project}
                 clip={clip}
                 playhead={playhead}
-                onSeek={(time) => setPlayhead(time)}
+                onSeek={seekTo}
               />
             </section>
           </section>
