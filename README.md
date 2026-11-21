@@ -44,16 +44,25 @@ PulseCut is a local-first studio that turns a long video into vertical, captione
 
 The first transcription downloads a Whisper model once (up to ~480 MB for `small`); after that, no network access is needed.
 
-## Quick start
+## Quick start (Windows)
 
-```bash
-git clone https://github.com/juxPapi/pulsecut.git
-cd pulsecut
-npm install
-npm run dev
+Double-click **`Start PulseCut.cmd`** in this folder. That starts both servers hidden,
+opens **http://localhost:5190**, and is safe to run again if PulseCut is already open.
+To have it return automatically after a restart, put a shortcut to
+`Start PulseCut.cmd` in your Startup folder (`Win+R` → `shell:startup`).
+
+From a terminal you can run either:
+
+```bat
+Start PulseCut.cmd     :: hidden, detached (recommended)
+dev.cmd                :: keeps both servers attached to this window
 ```
 
-Open **http://localhost:5190**. `npm run dev` starts both processes:
+Plain `npm run dev` may fail when PowerShell's execution policy is `Restricted`;
+`npm.cmd run dev` (what `dev.cmd` uses) works regardless. On macOS/Linux use
+`npm run dev` and open http://localhost:5190.
+
+`npm run dev` starts both processes:
 
 - Vite dev server on `http://localhost:5190` (proxies `/api` and `/media` to port 8790)
 - Express API on `http://127.0.0.1:8790`
