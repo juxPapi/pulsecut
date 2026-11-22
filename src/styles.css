@@ -845,6 +845,89 @@ textarea {
   grid-template-columns: 336px minmax(0, 1fr) 380px;
 }
 
+.studio.clips-hidden {
+  grid-template-columns: 0 minmax(0, 1fr) 380px;
+}
+
+.studio.panel-hidden {
+  grid-template-columns: 336px minmax(0, 1fr) 0;
+}
+
+.studio.clips-hidden.panel-hidden {
+  grid-template-columns: 0 minmax(0, 1fr) 0;
+}
+
+.studio > .clip-rail.is-hidden,
+.studio > .panel.is-hidden {
+  width: 0;
+  min-width: 0;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+  border: 0;
+}
+
+.rail-hide,
+.tabs .panel-hide {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel-2);
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+
+.rail-hide:hover,
+.tabs .panel-hide:hover {
+  color: var(--text);
+  border-color: var(--lime);
+  background: var(--panel-3);
+}
+
+.side-restore {
+  position: absolute;
+  top: 50%;
+  z-index: 6;
+  transform: translateY(-50%);
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  padding: 14px 7px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+
+.side-restore:hover {
+  color: var(--lime);
+  border-color: var(--lime);
+  background: var(--panel-3);
+}
+
+.side-restore.clips-restore {
+  left: 0;
+  border-left: 0;
+  border-radius: 0 9px 9px 0;
+}
+
+.side-restore.panel-restore {
+  right: 0;
+  border-right: 0;
+  border-radius: 9px 0 0 9px;
+}
+
 .rail,
 .panel {
   min-height: 0;
@@ -1219,6 +1302,14 @@ textarea {
   width: min(100%, calc(100cqh * var(--frame-ratio, 1.7778)), 1100px);
   transition: width 0.32s cubic-bezier(0.2, 0.9, 0.2, 1);
   filter: drop-shadow(0 24px 44px rgba(0, 0, 0, 0.5));
+}
+
+.studio.one-hidden .edit-frame {
+  width: min(100%, calc(100cqh * var(--frame-ratio, 1.7778)), 1400px);
+}
+
+.studio.both-hidden .edit-frame {
+  width: min(100%, calc(100cqh * var(--frame-ratio, 1.7778)), 1800px);
 }
 
 .frame-screen {
@@ -2341,9 +2432,16 @@ input[type='range']::-webkit-slider-thumb {
   .side-card {
     flex: 1 1 280px;
   }
-  .studio {
+  .studio,
+  .studio.clips-hidden,
+  .studio.panel-hidden,
+  .studio.clips-hidden.panel-hidden {
     grid-template-columns: 1fr;
     overflow-y: auto;
+  }
+  .studio > .clip-rail.is-hidden,
+  .studio > .panel.is-hidden {
+    display: none;
   }
   .clip-rail {
     max-height: 300px;
@@ -2364,6 +2462,19 @@ input[type='range']::-webkit-slider-thumb {
      window a floor instead of letting flex collapse it to a few pixels. */
   .frame-stage {
     min-height: 280px;
+  }
+  /* With the side sections hidden there is no reason to keep the editing
+     window short in the stacked layout. Give it enough height to actually
+     become larger instead of staying capped by the 280px floor. */
+  .studio.one-hidden .stage,
+  .studio.both-hidden .stage {
+    min-height: calc(100vh - 110px);
+  }
+  .studio.one-hidden .frame-stage {
+    min-height: 380px;
+  }
+  .studio.both-hidden .frame-stage {
+    min-height: 460px;
   }
   .render-card .export-panel {
     grid-template-columns: 1fr;

@@ -37,6 +37,8 @@ export default function ClipRail({
   onRetranscribe,
   onRenderAll,
   transcribing,
+  hidden = false,
+  onHide,
 }) {
   const [sort, setSort] = useState('score');
   const clips = useMemo(() => {
@@ -45,7 +47,7 @@ export default function ClipRail({
   }, [project.clips, sort]);
 
   return (
-    <aside className="rail clip-rail">
+    <aside className={`rail clip-rail ${hidden ? 'is-hidden' : ''}`}>
       <div className="rail-head">
         <div>
           <h2>Clips</h2>
@@ -59,6 +61,15 @@ export default function ClipRail({
             Timeline
           </button>
         </div>
+        <button
+          className="rail-hide"
+          type="button"
+          onClick={onHide}
+          title="Hide clips"
+          aria-label="Hide clips"
+        >
+          ×
+        </button>
       </div>
 
       <div className="rail-scroll">

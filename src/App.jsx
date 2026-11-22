@@ -99,6 +99,8 @@ export default function App() {
   const [error, setError] = useState(null);
   const [playhead, setPlayhead] = useState(0);
   const [railOpen, setRailOpen] = useState(true);
+  const [clipsOpen, setClipsOpen] = useState(true);
+  const [panelOpen, setPanelOpen] = useState(true);
 
   const projectRef = useRef(null);
   projectRef.current = project;
@@ -478,9 +480,15 @@ export default function App() {
         )}
 
         {activeStage === 'edit' && project && (
-          <main className="studio">
+          <main
+            className={`studio ${clipsOpen ? '' : 'clips-hidden'} ${panelOpen ? '' : 'panel-hidden'} ${
+              clipsOpen && panelOpen ? '' : clipsOpen && !panelOpen || !clipsOpen && panelOpen ? 'one-hidden' : 'both-hidden'
+            }`}
+          >
             <ClipRail
               project={project}
+              hidden={!clipsOpen}
+              onHide={() => setClipsOpen(false)}
               activeClipId={clip?.id}
               onSelect={(id) => {
                 const next = project.clips?.find((item) => item.id === id);
@@ -498,6 +506,28 @@ export default function App() {
             />
 
             <section className="stage">
+              {!clipsOpen && (
+                <button
+                  className="side-restore clips-restore"
+                  type="button"
+                  onClick={() => setClipsOpen(true)}
+                  title="Show clips"
+                  aria-label="Show clips"
+                >
+                  Clips
+                </button>
+              )}
+              {!panelOpen && (
+                <button
+                  className="side-restore panel-restore"
+                  type="button"
+                  onClick={() => setPanelOpen(true)}
+                  title="Show captions"
+                  aria-label="Show captions"
+                >
+                  Captions
+                </button>
+              )}
               <PhonePreview
                 project={project}
                 clip={clip}
@@ -567,7 +597,7 @@ export default function App() {
               )}
             </section>
 
-            <aside className="panel">
+            <aside className={`panel ${panelOpen ? '' : 'is-hidden'}`}>
               <nav className="tabs">
                 {TABS.map((item) => (
                   <button
@@ -578,6 +608,15 @@ export default function App() {
                     {item.label}
                   </button>
                 ))}
+                <button
+                  className="panel-hide"
+                  type="button"
+                  onClick={() => setPanelOpen(false)}
+                  title="Hide captions panel"
+                  aria-label="Hide captions panel"
+                >
+                  ×
+                </button>
               </nav>
               <div className="panel-body">
                 {tab === 'style' && (
