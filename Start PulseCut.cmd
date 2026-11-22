@@ -1,4 +1,6 @@
 @echo off
-rem Double-click this file, or run it from a terminal, to start PulseCut.
-rem Uses wscript.exe so the servers run hidden and survive this window closing.
-wscript.exe "%~dp0Start PulseCut.vbs"
+rem Double-click this file to start PulseCut and keep it running.
+rem The watchdog starts hidden, restarts the API/web server if either stops,
+rem and opens the studio in the browser.
+start "" wscript.exe "%~dp0PulseCut Watchdog.vbs"
+exit /b 0
